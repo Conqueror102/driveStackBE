@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
 import { SafeUser } from './auth.service';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -10,6 +10,7 @@ import { ChangePasswordDto } from './dto/change-password.dto';
 import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
+import { UpdateCountryDto } from './dto/update-country.dto';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 
 type LoginRequest = Request & { user: SafeUser };
@@ -33,6 +34,12 @@ export class AuthController {
   @Get('me')
   me(@CurrentUser() user: SafeUser) {
     return this.authService.findMe(user.id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('country')
+  updateCountry(@CurrentUser() user: SafeUser, @Body() dto: UpdateCountryDto, @Req() req: Request) {
+    return this.authService.updateCountry(user.id, dto.country, this.requestContext(req));
   }
 
   @UseGuards(JwtAuthGuard)
@@ -70,7 +77,9 @@ export class AuthController {
 
   private requestContext(req: Request) {
     return {
-      ipAddress: req.ip || req.socket.remoteAddress,
+      ipAddress: ((req.headers['x-forwarded-for'] as string) || req.ip || req.socket.remoteAddress || '127.0.0.1')
+        .split(',')[0]
+        .trim(),
       userAgent: req.get('user-agent'),
     };
   }

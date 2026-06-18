@@ -16,17 +16,138 @@ model User {
   emailVerified     Boolean            @default(false)
   status            UserStatus         @default(ACTIVE)
   tokenVersion      Int                @default(0)
+  bonusSlots        Int                @default(0)
+  signupIp          String?
+  country           String?
+  referralCode      String?            @unique
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
+  activityEvents    ActivityEvent[]
+  adminAuditLogs    AdminAuditLog[]
   auditLogs         AuditLog[]
   authTokens        AuthToken[]
   connectedAccounts ConnectedAccount[]
+  duplicateGroups   DuplicateGroup[]
+  moveOperations    MoveOperation[]
+  notifications     Notification[]
   oauthStates       OAuthState[]
+  payments          Payment[]
   requestLogs       RequestLog[]
+  savedSearches     SavedSearch[]
+  storageAlerts     StorageAlert[]
+  subscription      Subscription?
+  referralsMade     Referral[]         @relation("referrer")
+  referredBy        Referral?          @relation("referred")
   syncJobs          SyncJob[]
   uploadSessions    UploadSession[]
 
   @@index([email])
+  @@index([referralCode])
+}
+
+model Subscription {
+  id                 String             @id @default(cuid())
+  userId             String             @unique
+  dodoCustomerId     String?
+  dodoSubscriptionId String?            @unique
+  plan               SubscriptionPlan   @default(FREE)
+  status             SubscriptionStatus @default(ACTIVE)
+  currency           String             @default("NGN")
+  interval           String             @default("month")
+  priceAmount        Int                @default(0)
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  cancelledAt        DateTime?
+  gracePeriodEndsAt  DateTime?
+  trialEndsAt        DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([dodoSubscriptionId])
+  @@index([status])
+  @@index([currentPeriodEnd])
+  @@index([gracePeriodEndsAt])
+}
+
+model Payment {
+  id             String        @id @default(cuid())
+  userId         String
+  dodoPaymentId  String        @unique
+  subscriptionId String?
+  amount         Int
+  currency       String
+  status         PaymentStatus
+  type           PaymentType
+  description    String?
+  metadata       Json?
+  createdAt      DateTime      @default(now())
+  user           User          @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([dodoPaymentId])
+  @@index([createdAt])
+}
+
+model ProcessedWebhook {
+  id          String   @id @default(cuid())
+  webhookId   String   @unique
+  eventType   String
+  processedAt DateTime @default(now())
+
+  @@index([webhookId])
+  @@index([processedAt])
+}
+
+model Referral {
+  id             String         @id @default(cuid())
+  referrerId     String
+  referredUserId String         @unique
+  status         ReferralStatus @default(PENDING)
+  rewardGranted  Boolean        @default(false)
+  rewardRevoked  Boolean        @default(false)
+  convertedAt    DateTime?
+  createdAt      DateTime       @default(now())
+  referrer       User           @relation("referrer", fields: [referrerId], references: [id])
+  referredUser   User           @relation("referred", fields: [referredUserId], references: [id])
+
+  @@index([referrerId])
+  @@index([status])
+}
+
+model AdminAuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  entity    String
+  entityId  String
+  before    Json?
+  after     Json?
+  metadata  Json?
+  ipAddress String?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([action])
+  @@index([entity])
+  @@index([createdAt])
+}
+
+model PricingConfig {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  productId String
+  amount    Int
+  currency  String
+  interval  String
+  isActive  Boolean  @default(true)
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+  createdAt DateTime @default(now())
+
+  @@index([key])
+  @@index([isActive])
 }
 
 model Admin {
@@ -62,51 +183,55 @@ model AuthToken {
 }
 
 model ConnectedAccount {
-  id                    String          @id @default(cuid())
+  id                    String            @id @default(cuid())
   userId                String
-  googleEmail           String          @unique
+  googleEmail           String            @unique
   displayName           String?
   avatarUrl             String?
   accessToken           String
   refreshToken          String
   expiresAt             DateTime
-  storageLimit          BigInt          @default(16106127360)
-  storageUsed           BigInt          @default(0)
-  quotaUpdatedAt        DateTime        @default(now())
-  status                AccountStatus   @default(ACTIVE)
+  storageLimit          BigInt            @default(16106127360)
+  storageUsed           BigInt            @default(0)
+  quotaUpdatedAt        DateTime          @default(now())
+  status                AccountStatus     @default(ACTIVE)
   lastSyncAt            DateTime?
   lastSyncError         String?
   reauthRequiredAt      DateTime?
   driveChangesPageToken String?
-  createdAt             DateTime        @default(now())
-  updatedAt             DateTime        @updatedAt
-  user                  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+  isDefault             Boolean           @default(false)
+  user                  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   fileCache             FileCache[]
+  storageAlerts         StorageAlert[]
+  storageSnapshots      StorageSnapshot[]
   syncJobs              SyncJob[]
   uploadSessions        UploadSession[]
 
   @@index([userId])
+  @@index([userId, isDefault])
   @@index([expiresAt])
 }
 
 model FileCache {
-  id              String           @id @default(cuid())
-  accountId       String
-  driveFileId     String
-  name            String
-  mimeType        String
-  fileType        FileType         @default(OTHER)
-  sizeBytes       BigInt           @default(0)
-  webViewLink     String?
-  thumbnailLink   String?
+  id                 String           @id @default(cuid())
+  accountId          String
+  driveFileId        String
+  name               String
+  mimeType           String
+  fileType           FileType         @default(OTHER)
+  sizeBytes          BigInt           @default(0)
+  webViewLink        String?
+  thumbnailLink      String?
+  driveParentId      String?
+  isFolder           Boolean          @default(false)
+  driveCreatedAt     DateTime
+  driveModifiedAt    DateTime
+  cachedAt           DateTime         @default(now())
   thumbnailUpdatedAt DateTime?
-  iconLink        String?
-  driveParentId   String?
-  isFolder        Boolean          @default(false)
-  driveCreatedAt  DateTime
-  driveModifiedAt DateTime
-  cachedAt        DateTime         @default(now())
-  account         ConnectedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  iconLink           String?
+  account            ConnectedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@unique([accountId, driveFileId])
   @@index([accountId])
@@ -138,6 +263,124 @@ model UploadSession {
   @@index([accountId])
   @@index([status])
   @@index([expiresAt])
+}
+
+model MoveOperation {
+  id                     String     @id @default(cuid())
+  userId                 String
+  driveFileId            String
+  destinationDriveFileId String?
+  fileName               String
+  mimeType               String
+  sizeBytes              BigInt     @default(0)
+  sourceAccountId        String
+  destinationAccountId   String
+  status                 MoveStatus @default(PENDING)
+  error                  String?
+  startedAt              DateTime?
+  completedAt            DateTime?
+  createdAt              DateTime   @default(now())
+  updatedAt              DateTime   @updatedAt
+  phase                  MovePhase  @default(PREPARING)
+  bytesTransferred       BigInt     @default(0)
+  totalBytes             BigInt     @default(0)
+  progress               Int        @default(0)
+  totalItems             Int        @default(1)
+  completedItems         Int        @default(0)
+  user                   User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ActivityEvent {
+  id          String            @id @default(cuid())
+  userId      String
+  type        ActivityEventType
+  message     String
+  accountId   String?
+  fileId      String?
+  operationId String?
+  metadata    Json?
+  createdAt   DateTime          @default(now())
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, type])
+  @@index([operationId])
+}
+
+model SavedSearch {
+  id             String    @id @default(cuid())
+  userId         String
+  name           String
+  search         String?
+  accountId      String?
+  fileType       FileType?
+  minSizeBytes   BigInt?
+  maxSizeBytes   BigInt?
+  modifiedAfter  DateTime?
+  modifiedBefore DateTime?
+  sortBy         String    @default("modifiedAt")
+  sortOrder      String    @default("desc")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  message   String
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+  @@index([userId, createdAt(sort: Desc)])
+}
+
+model StorageAlert {
+  id        String           @id @default(cuid())
+  userId    String
+  accountId String
+  threshold Int
+  triggered Boolean          @default(false)
+  sentAt    DateTime?
+  createdAt DateTime         @default(now())
+  account   ConnectedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, threshold])
+  @@index([userId])
+}
+
+model DuplicateGroup {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  sizeBytes BigInt
+  fileIds   String[]
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model StorageSnapshot {
+  id        String           @id @default(cuid())
+  accountId String
+  usedBytes BigInt
+  takenAt   DateTime         @default(now())
+  account   ConnectedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, takenAt])
 }
 
 model OAuthState {
@@ -221,6 +464,43 @@ enum UploadStatus {
   EXPIRED
 }
 
+enum MoveStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+enum MovePhase {
+  PREPARING
+  COPYING_NATIVE
+  DOWNLOADING
+  UPLOADING
+  CREATING_FOLDER
+  MOVING_CHILDREN
+  TRASHING_SOURCE
+  SYNCING_CACHE
+  COMPLETED
+}
+
+enum ActivityEventType {
+  UPLOAD_COMPLETED
+  URL_UPLOAD_COMPLETED
+  FILE_MOVED
+  MOVE_FAILED
+  FILE_TRASHED
+  FILE_RESTORED
+  DUPLICATE_SCAN_COMPLETED
+  STORAGE_ALERT
+}
+
+enum NotificationType {
+  STORAGE_ALERT
+  MOVE_COMPLETE
+  MOVE_FAILED
+  DUPLICATE_FOUND
+}
+
 enum FileType {
   DOCUMENT
   SPREADSHEET
@@ -244,6 +524,39 @@ enum SyncJobStatus {
   RUNNING
   SUCCEEDED
   FAILED
+}
+
+enum SubscriptionPlan {
+  FREE
+  PRO
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  ON_HOLD
+  CANCELLED
+  EXPIRED
+  PAST_DUE
+}
+
+enum PaymentStatus {
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  DISPUTED
+  CANCELLED
+}
+
+enum PaymentType {
+  SUBSCRIPTION_PAYMENT
+  REFUND
+}
+
+enum ReferralStatus {
+  PENDING
+  CONVERTED
+  EXPIRED
+  REVOKED
 }
 
 enum AuditAction {

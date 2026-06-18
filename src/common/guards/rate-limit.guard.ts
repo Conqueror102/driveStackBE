@@ -20,6 +20,7 @@ export class RateLimitGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<Request>();
+    if (req.path === '/payments/webhook') return true;
     const key = this.keyFor(req);
     const limit = this.limitFor(req);
     const redisCount = await this.redis.incrementWindow(`rate-limit:${key}`, WINDOW_MS / 1000);
@@ -53,6 +54,7 @@ export class RateLimitGuard implements CanActivate {
   }
 
   private limitFor(req: Request): number {
+    if (req.path === '/payments/checkout' && req.method === 'POST') return 3;
     if (req.path.startsWith('/auth')) return AUTH_LIMIT;
     if (['POST', 'PATCH', 'DELETE'].includes(req.method)) return MUTATION_LIMIT;
     return DEFAULT_LIMIT;

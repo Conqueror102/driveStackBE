@@ -1,4 +1,4 @@
-import { Controller, Delete, Get, Logger, Param, Query, Redirect, Res, UseGuards } from '@nestjs/common';
+import { Controller, Delete, Get, Logger, Param, Patch, Query, Redirect, Res, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Response } from 'express';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -52,6 +52,18 @@ export class GoogleAccountsController {
   async disconnect(@CurrentUser() user: SafeUser, @Param('id') accountId: string) {
     await this.accountsService.disconnectAccount(user.id, accountId);
     return { success: true };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch(':id/set-default')
+  setDefault(@CurrentUser() user: SafeUser, @Param('id') accountId: string) {
+    return this.accountsService.setDefaultAccount(user.id, accountId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch(':id/remove-default')
+  removeDefault(@CurrentUser() user: SafeUser, @Param('id') accountId: string) {
+    return this.accountsService.removeDefaultAccount(user.id, accountId);
   }
 
   @UseGuards(JwtAuthGuard)

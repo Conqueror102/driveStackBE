@@ -1,14 +1,17 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Admin, AuditAction, Prisma, UserStatus } from '@prisma/client';
+import { AdminAuditService } from '../common/admin-audit/admin-audit.service';
 import { AuditService } from '../common/audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ListAdminUsersQueryDto } from './dto/list-admin-users-query.dto';
+import { UpdatePricingDto } from './dto/update-pricing.dto';
 
 @Injectable()
 export class AdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly adminAudit: AdminAuditService,
   ) {}
 
   async getSummary() {
@@ -233,5 +236,115 @@ export class AdminService {
     if (!['ADMIN', 'SUPER_ADMIN'].includes(admin.role)) {
       throw new ForbiddenException('Admin does not have permission');
     }
+  }
+
+  async manualUpgrade(admin: Admin, targetUserId: string, adminNote: string, adminIp: string) {
+    this.assertCanChangeUsers(admin);
+    const user = await this.prisma.user.findUnique({ where: { id: targetUserId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    await this.prisma.subscription.upsert({
+      where: { userId: targetUserId },
+      create: {
+        userId: targetUserId,
+        plan: 'PRO',
+        status: 'ACTIVE',
+        currentPeriodEnd: periodEnd,
+      },
+      update: {
+        plan: 'PRO',
+        status: 'ACTIVE',
+        currentPeriodEnd: periodEnd,
+      },
+    });
+
+    await this.adminAudit.log({
+      userId: targetUserId,
+      action: 'admin.user_upgraded_manually',
+      entity: 'Subscription',
+      entityId: targetUserId,
+      metadata: { adminId: admin.id, adminNote, periodEnd },
+      ipAddress: adminIp,
+    });
+    return { success: true, currentPeriodEnd: periodEnd };
+  }
+
+  async updatePricing(admin: Admin, dto: UpdatePricingDto, adminIp: string) {
+    const existing = await this.prisma.pricingConfig.findUnique({ where: { key: dto.key } });
+    const pricing = await this.prisma.pricingConfig.upsert({
+      where: { key: dto.key },
+      create: {
+        key: dto.key,
+        productId: dto.productId,
+        amount: dto.amount,
+        currency: dto.currency,
+        interval: dto.interval ?? 'month',
+        isActive: dto.isActive ?? true,
+        updatedBy: admin.id,
+      },
+      update: {
+        productId: dto.productId,
+        amount: dto.amount,
+        currency: dto.currency,
+        interval: dto.interval ?? 'month',
+        isActive: dto.isActive ?? true,
+        updatedBy: admin.id,
+      },
+    });
+
+    await this.adminAudit.log({
+      action: 'admin.pricing_updated',
+      entity: 'PricingConfig',
+      entityId: dto.key,
+      before: (existing ?? {}) as Prisma.InputJsonValue,
+      after: { ...dto } as Prisma.InputJsonValue,
+      metadata: { adminId: admin.id },
+      ipAddress: adminIp,
+    });
+    return pricing;
+  }
+
+  async getPaymentAuditLog(params: { userId?: string; action?: string; page?: number; limit?: number }) {
+    const page = Math.max(params.page || 1, 1);
+    const limit = Math.min(Math.max(params.limit || 50, 1), 200);
+    const where: Prisma.AdminAuditLogWhereInput = {
+      ...(params.userId ? { userId: params.userId } : {}),
+      ...(params.action ? { action: { contains: params.action, mode: 'insensitive' } } : {}),
+    };
+    const [total, data] = await this.prisma.$transaction([
+      this.prisma.adminAuditLog.count({ where }),
+      this.prisma.adminAuditLog.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        include: { user: { select: { id: true, email: true, displayName: true } } },
+      }),
+    ]);
+    return { data, meta: { total, page, limit, lastPage: Math.ceil(total / limit) } };
+  }
+
+  async getRevenueSummary() {
+    const [totalSucceeded, totalRefunded, activeSubscriptions] = await Promise.all([
+      this.prisma.payment.aggregate({
+        where: { status: 'SUCCEEDED' },
+        _sum: { amount: true },
+        _count: true,
+      }),
+      this.prisma.payment.aggregate({
+        where: { status: 'REFUNDED' },
+        _sum: { amount: true },
+        _count: true,
+      }),
+      this.prisma.subscription.count({ where: { plan: 'PRO', status: 'ACTIVE' } }),
+    ]);
+    return {
+      totalRevenue: totalSucceeded._sum.amount ?? 0,
+      totalTransactions: totalSucceeded._count,
+      totalRefunded: totalRefunded._sum.amount ?? 0,
+      refundedTransactions: totalRefunded._count,
+      activeSubscriptions,
+    };
   }
 }

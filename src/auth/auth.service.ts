@@ -5,8 +5,11 @@ import { AuditAction, AuthTokenType, User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'crypto';
 import { AuditService } from '../common/audit/audit.service';
+import { AdminAuditService } from '../common/admin-audit/admin-audit.service';
+import { GeoService } from '../common/geo/geo.service';
 import { EmailService } from '../email/email.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { ReferralsService } from '../referrals/referrals.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
@@ -27,7 +30,10 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly audit: AuditService,
+    private readonly adminAudit: AdminAuditService,
     private readonly email: EmailService,
+    private readonly geo: GeoService,
+    private readonly referrals: ReferralsService,
   ) {}
 
   async register(dto: RegisterDto, context?: { ipAddress?: string; userAgent?: string }) {
@@ -37,18 +43,43 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(dto.password, 12);
-    const user = await this.prisma.user.create({
-      data: {
-        email: dto.email,
-        passwordHash,
-        displayName: dto.displayName,
-      },
+    const country = await this.geo.detectCountry(context?.ipAddress || '127.0.0.1');
+    const user = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: {
+          email: dto.email,
+          passwordHash,
+          displayName: dto.displayName,
+          country,
+          signupIp: context?.ipAddress,
+          referralCode: this.generateReferralCode(dto.email),
+        },
+      });
+      await tx.subscription.create({
+        data: {
+          userId: created.id,
+          plan: 'FREE',
+          status: 'ACTIVE',
+        },
+      });
+      return created;
     });
+    if (dto.referralCode) {
+      await this.referrals.recordReferral(dto.referralCode, user.id, context?.ipAddress || '127.0.0.1');
+    }
     await this.audit.log({
       userId: user.id,
       action: AuditAction.USER_REGISTERED,
       ipAddress: context?.ipAddress,
       userAgent: context?.userAgent,
+      metadata: { country },
+    });
+    await this.adminAudit.log({
+      userId: user.id,
+      action: 'user.registered',
+      entity: 'User',
+      entityId: user.id,
+      metadata: { country, ip: context?.ipAddress },
     });
 
     if (this.isProduction()) {
@@ -189,12 +220,44 @@ export class AuthService {
     return stripPasswordHash(user);
   }
 
-  async findMe(userId: string): Promise<SafeUser> {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+  async findMe(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { subscription: true } });
     if (!user) {
       throw new UnauthorizedException('Invalid token');
     }
-    return stripPasswordHash(user);
+    const safe = stripPasswordHash(user);
+    return {
+      ...safe,
+      country: user.country ?? 'UNKNOWN',
+      currency: this.geo.getCurrency(user.country ?? 'UNKNOWN'),
+      bonusSlots: user.bonusSlots,
+      referralCode: user.referralCode,
+      subscription: {
+        plan: user.subscription?.plan ?? 'FREE',
+        status: user.subscription?.status ?? 'ACTIVE',
+        currentPeriodEnd: user.subscription?.currentPeriodEnd ?? null,
+        gracePeriodEndsAt: user.subscription?.gracePeriodEndsAt ?? null,
+      },
+    };
+  }
+
+  async updateCountry(userId: string, country: string, context?: { ipAddress?: string; userAgent?: string }) {
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { country: true } });
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: { country },
+      select: { country: true },
+    });
+    await this.adminAudit.log({
+      userId,
+      action: 'user.country_updated',
+      entity: 'User',
+      entityId: userId,
+      before: { country: user.country },
+      after: { country },
+      ipAddress: context?.ipAddress,
+    });
+    return { country: updated.country, currency: this.geo.getCurrency(updated.country ?? 'UNKNOWN') };
   }
 
   private issueToken(user: SafeUser) {
@@ -244,5 +307,10 @@ export class AuthService {
 
   private isProduction(): boolean {
     return this.configService.get<string>('NODE_ENV') === 'production';
+  }
+
+  private generateReferralCode(email: string): string {
+    const prefix = email.split('@')[0].replace(/[^a-z0-9]/gi, '').slice(0, 6).toUpperCase() || 'USER';
+    return `${prefix}${randomBytes(5).toString('hex').toUpperCase()}`;
   }
 }

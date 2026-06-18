@@ -340,6 +340,32 @@
             },
             "description": "Invalidates existing JWTs by incrementing tokenVersion. Run Login again after this request."
           }
+        },
+        {
+          "name": "Update Country",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"country\": \"US\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/country",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "country"
+              ]
+            }
+          }
         }
       ]
     },
@@ -682,6 +708,107 @@
               ]
             },
             "description": "Invalidates existing admin JWTs by incrementing the admin token version."
+          }
+        },
+        {
+          "name": "Metrics Revenue",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/admin/revenue",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "revenue"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Pricing Config",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"key\": \"pro_usd\",\n  \"productId\": \"prod_new_id\",\n  \"amount\": 299,\n  \"currency\": \"USD\",\n  \"interval\": \"month\",\n  \"isActive\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/pricing",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "pricing"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Manual Upgrade User",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"adminNote\": \"Support request granted 1 month pro\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/users/{{user_id}}/upgrade",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{user_id}}",
+                "upgrade"
+              ]
+            }
           }
         }
       ]
@@ -1044,6 +1171,142 @@
               ]
             },
             "description": "Deletes the real Google Drive file. Use carefully."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Payments",
+      "item": [
+        {
+          "name": "Create Checkout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/payments/checkout",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "payments",
+                "checkout"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Cancel Subscription",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/payments/cancel",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "payments",
+                "cancel"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Customer Portal",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/payments/portal",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "payments",
+                "portal"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Subscription Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/payments/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "payments",
+                "status"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Dodo Webhook",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "webhook-id",
+                "value": "test_id"
+              },
+              {
+                "key": "webhook-signature",
+                "value": "test_sig"
+              },
+              {
+                "key": "webhook-timestamp",
+                "value": "12345678"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"subscription.active\",\n  \"data\": {\n    \"subscription_id\": \"sub_123\",\n    \"status\": \"ACTIVE\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payments/webhook",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "payments",
+                "webhook"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Referrals",
+      "item": [
+        {
+          "name": "Get Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/referrals/stats",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "referrals",
+                "stats"
+              ]
+            }
           }
         }
       ]

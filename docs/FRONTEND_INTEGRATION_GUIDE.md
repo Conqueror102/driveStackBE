@@ -1,8 +1,8 @@
-# Gmail Aggregator Frontend Integration Guide
+# DriveStack Frontend Integration Guide
 
-This document is the handoff spec for wiring a frontend to this backend.
+This document is the handoff spec for wiring a frontend to the DriveStack backend.
 
-The backend is a NestJS REST API for users who want to connect one or more Google accounts, view Google Drive files across those accounts, view combined storage quota, create direct-to-Google upload sessions, and delete Drive files.
+The backend is a REST API for users who want to connect one or more Google accounts, view Google Drive files across those accounts, upgrade to PRO subscriptions for more storage slots, earn referral bonuses, and manage their files.
 
 Default local API base URL:
 
@@ -90,22 +90,21 @@ The backend accepts browser requests only from `FRONTEND_URL` in `.env`. The fro
 
 Recommended screens:
 
-1. Register
+1. Register (Accepts optional `referralCode` in URL/form)
 2. Login
-3. Email verification notice / verify token screen
-4. Forgot password / reset password
-5. Dashboard
-6. Connected Google accounts
-7. Files browser
-8. Upload flow
-9. Settings / change password
+3. Dashboard (Shows Drive summary, Storage quota, and recent files)
+4. Connected Google accounts (with PRO limits vs FREE limits handling)
+5. Files browser & Upload flow
+6. Billing & Subscription (Checkout, cancel, view portal)
+7. Referrals (Shows link, stats, and bonus slots)
+8. Settings (Change password, change Country/Currency)
 
 Recommended admin screens:
 
 1. Admin login
-2. Metrics dashboard
-3. User list
-4. User detail
+2. Metrics dashboard & Revenue
+3. User list & Detail
+4. Pricing Config (Change active Product IDs)
 5. Audit logs
 
 ## 3. User Auth Flow
@@ -123,7 +122,8 @@ Request:
 {
   "email": "user@example.com",
   "password": "password123",
-  "displayName": "Victor"
+  "displayName": "Victor",
+  "referralCode": "OPTIONAL_CODE"
 }
 ```
 
@@ -217,16 +217,19 @@ Response:
   "id": "clx...",
   "email": "user@example.com",
   "displayName": "Victor",
-  "avatarUrl": null,
-  "emailVerified": true,
+  "country": "US",
+  "currency": "USD",
+  "bonusSlots": 0,
+  "subscription": {
+    "plan": "FREE",
+    "status": "ACTIVE"
+  },
   "status": "ACTIVE",
-  "tokenVersion": 0,
-  "createdAt": "2026-05-28T00:00:00.000Z",
-  "updatedAt": "2026-05-28T00:00:00.000Z"
+  "createdAt": "2026-05-28T00:00:00.000Z"
 }
 ```
 
-Use this endpoint on app boot to validate a stored token.
+Use this endpoint on app boot to validate a stored token and check the `subscription.plan` and `currency`.
 
 ### Logout
 

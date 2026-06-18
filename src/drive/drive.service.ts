@@ -63,6 +63,18 @@ export class DriveService {
     }
   }
 
+  async listFolderChildren(
+    accessToken: string,
+    folderId: string,
+    options: { pageToken?: string; pageSize?: number } = {},
+  ): Promise<{ files: DriveFile[]; nextPageToken?: string }> {
+    return this.listFiles(accessToken, {
+      pageToken: options.pageToken,
+      pageSize: options.pageSize || 1000,
+      query: `'${folderId.replace(/'/g, "\\'")}' in parents and trashed=false`,
+    });
+  }
+
   async getQuota(accessToken: string): Promise<{ limit: bigint; usage: bigint; usageInDrive: bigint }> {
     try {
       const drive = this.client(accessToken);
@@ -117,7 +129,7 @@ export class DriveService {
 
   async createResumableUploadSession(
     accessToken: string,
-    metadata: { name: string; mimeType: string; fileSize: number; parentId?: string; origin: string },
+    metadata: { name: string; mimeType: string; fileSize?: number; parentId?: string; origin: string },
   ): Promise<string> {
     try {
       const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
@@ -126,7 +138,7 @@ export class DriveService {
           Authorization: `Bearer ${accessToken}`,
           'Content-Type': 'application/json; charset=UTF-8',
           'X-Upload-Content-Type': metadata.mimeType,
-          'X-Upload-Content-Length': String(metadata.fileSize),
+          ...(metadata.fileSize ? { 'X-Upload-Content-Length': String(metadata.fileSize) } : {}),
           Origin: metadata.origin,
         },
         body: JSON.stringify({
@@ -160,6 +172,106 @@ export class DriveService {
     } catch (error) {
       this.handleGoogleError(error);
     }
+  }
+
+  async trashFile(accessToken: string, fileId: string): Promise<void> {
+    try {
+      await this.client(accessToken).files.update({
+        fileId,
+        requestBody: { trashed: true },
+        supportsAllDrives: true,
+      });
+    } catch (error) {
+      this.handleGoogleError(error);
+    }
+  }
+
+  async restoreFile(accessToken: string, fileId: string): Promise<void> {
+    try {
+      await this.client(accessToken).files.update({
+        fileId,
+        requestBody: { trashed: false },
+        supportsAllDrives: true,
+      });
+    } catch (error) {
+      this.handleGoogleError(error);
+    }
+  }
+
+  async createFolder(accessToken: string, metadata: { name: string; parentId?: string }): Promise<DriveFile> {
+    try {
+      const { data } = await this.client(accessToken).files.create({
+        requestBody: {
+          name: metadata.name,
+          mimeType: 'application/vnd.google-apps.folder',
+          ...(metadata.parentId ? { parents: [metadata.parentId] } : {}),
+        },
+        fields: 'id,name,mimeType,size,webViewLink,webContentLink,thumbnailLink,iconLink,exportLinks,parents,createdTime,modifiedTime',
+        supportsAllDrives: true,
+      });
+      return this.normalizeFile(data);
+    } catch (error) {
+      this.handleGoogleError(error);
+    }
+  }
+
+  async copyFile(accessToken: string, fileId: string, metadata: { name?: string; parentId?: string } = {}): Promise<DriveFile> {
+    try {
+      const { data } = await this.client(accessToken).files.copy({
+        fileId,
+        requestBody: {
+          ...(metadata.name ? { name: metadata.name } : {}),
+          ...(metadata.parentId ? { parents: [metadata.parentId] } : {}),
+        },
+        fields: 'id,name,mimeType,size,webViewLink,webContentLink,thumbnailLink,iconLink,exportLinks,parents,createdTime,modifiedTime',
+        supportsAllDrives: true,
+      });
+      return this.normalizeFile(data);
+    } catch (error) {
+      this.handleGoogleError(error);
+    }
+  }
+
+  async grantReaderPermission(accessToken: string, fileId: string, emailAddress: string): Promise<string | null> {
+    try {
+      const { data } = await this.client(accessToken).permissions.create({
+        fileId,
+        sendNotificationEmail: false,
+        requestBody: {
+          type: 'user',
+          role: 'reader',
+          emailAddress,
+        },
+        fields: 'id',
+        supportsAllDrives: true,
+      });
+      return data.id || null;
+    } catch (error) {
+      this.handleGoogleError(error);
+    }
+  }
+
+  async revokePermission(accessToken: string, fileId: string, permissionId: string): Promise<void> {
+    try {
+      await this.client(accessToken).permissions.delete({
+        fileId,
+        permissionId,
+        supportsAllDrives: true,
+      });
+    } catch (error) {
+      this.logger.warn(`Failed to revoke Drive permission ${permissionId} on ${fileId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async downloadFile(accessToken: string, fileId: string): Promise<Response> {
+    const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (response.status === 401) throw new UnauthorizedException('Drive token is invalid');
+    if (response.status === 403) throw new ForbiddenException('Drive access forbidden');
+    if (response.status === 404) throw new NotFoundException('Drive file not found');
+    if (!response.ok) throw new ServiceUnavailableException('Google Drive media unavailable');
+    return response;
   }
 
   async getFile(accessToken: string, fileId: string): Promise<DriveFile> {

@@ -1,28 +1,21 @@
-# Gmail Aggregator Backend System Documentation
+# DriveStack Backend System Documentation
 
 ## 1. Purpose
 
-This backend is a NestJS REST API that lets one authenticated app user connect multiple Google accounts and manage Google Drive storage across those accounts from a single API.
+This is the core backend engine for DriveStack. It allows an authenticated user to connect multiple Google accounts, manage Google Drive storage across those accounts from a single API, and handles subscriptions, referrals, and geo-targeted billing.
 
 The system handles:
 
 - User registration and login with JWT authentication
-- Google OAuth 2.0 account connection
-- Encrypted storage of Google access and refresh tokens
-- Automatic Google access token refresh before protected requests
-- Google Drive file listing and local cache management
-- Aggregated storage quota across all connected Google accounts
-- Google Drive resumable upload session creation
-- Upload session completion tracking
-- Google Drive file deletion
-- Scheduled cleanup for expired upload sessions and stale cache rows
-- One-time OAuth state validation to prevent account-linking CSRF
-- Account health states for revoked tokens and sync failures
-- Audit logging for sensitive user/account/file actions
+- Automated Geo-IP detection to assign local currencies (e.g., NGN vs USD)
+- Google OAuth 2.0 account connection with encrypted storage of tokens
+- Google Drive file listing, search, and duplicate detection
+- Subscriptions via Dodo Payments (Checkout, Portals, and Idempotent Webhooks)
+- Referral tracking and automatic reward provisioning
+- Google Drive resumable upload session creation and tracking
+- Scheduled cleanup for expired upload sessions, webhooks, and stale cache rows
 - Redis-backed request rate limiting with in-memory fallback
-- Redis/BullMQ workers for file sync, quota refresh, token refresh retry, and upload verification
-- Separate admin authentication and admin APIs for system metrics, user management, and audit review
-- Request/visit tracking for backend traffic analytics
+- Separate admin authentication and admin APIs for system metrics, revenue, and audit review
 - Swagger/OpenAPI docs at `/docs/api`
 
 The backend does not proxy uploaded file bytes. It only creates Google Drive resumable upload session URIs, then the client uploads directly to Google.
@@ -138,75 +131,56 @@ src/
     admin.module.ts
     admin.controller.ts
     admin.service.ts
-    admin-auth.controller.ts
-    admin-auth.service.ts
-    current-admin.decorator.ts
-    dto/
-      admin-login.dto.ts
-      list-admin-users-query.dto.ts
-      update-user-status.dto.ts
-    guards/
-      admin-jwt-auth.guard.ts
-    strategies/
-      admin-jwt.strategy.ts
-    scripts/
-      create-admin.ts
+
+  payments/
+    payments.module.ts
+    payments.controller.ts
+    payments.service.ts
+    webhook.controller.ts
+    webhook.service.ts
+
+  referrals/
+    referrals.module.ts
+    referrals.controller.ts
+    referrals.service.ts
+
+  common/geo/
+    geo.service.ts
+
+  subscriptions/
+    feature-guard.service.ts
 
   google-accounts/
     google-accounts.module.ts
-    google-accounts.controller.ts
-    google-accounts.service.ts
-    google-auth.service.ts
-    dto/
-      connect-account.dto.ts
+    ...
 
   drive/
-    drive.module.ts
-    drive.service.ts
-    quota.service.ts
+    ...
 
   files/
-    files.module.ts
-    files.controller.ts
-    files.service.ts
-    dto/
-      complete-upload-session.dto.ts
-      create-upload-session.dto.ts
-      list-files-query.dto.ts
+    ...
 
   storage/
-    storage.module.ts
-    storage.controller.ts
-    storage.service.ts
+    ...
 
   jobs/
-    jobs.module.ts
     cleanup.service.ts
 
   email/
-    email.module.ts
-    email.service.ts
-    email.types.ts
-    providers/
-      console.provider.ts
-      custom-http.provider.ts
-      resend.provider.ts
-      sendgrid.provider.ts
-      zoho.provider.ts
+    ...
 
   redis/
-    redis.module.ts
-    redis.service.ts
+    ...
 
   queue/
-    queue.module.ts
-    queue.service.ts
+    ...
 
 prisma/
   schema.prisma
 
 docs/
   SYSTEM_DOCUMENTATION.md
+  FRONTEND_INTEGRATION_GUIDE.md
   Gmail-Aggregator.postman_collection.json
   Gmail-Aggregator.postman_environment.json
 ```

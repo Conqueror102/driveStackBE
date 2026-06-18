@@ -1,19 +1,31 @@
-import { BadRequestException, ForbiddenException, HttpException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, HttpException, Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AuditAction, ConnectedAccount, FileCache, FileType, Prisma } from '@prisma/client';
+import { ActivityEventType, AuditAction, ConnectedAccount, FileCache, FileType, Prisma } from '@prisma/client';
+import { lookup } from 'dns/promises';
+import { isIP } from 'net';
+import { Readable, Transform, TransformCallback } from 'stream';
+import { ActivityService } from '../activity/activity.service';
 import { AuditService } from '../common/audit/audit.service';
 import { CryptoService } from '../common/crypto/crypto.service';
 import { DriveFile, DriveService } from '../drive/drive.service';
+import { GoogleAuthService } from '../google-accounts/google-auth.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueueService } from '../queue/queue.service';
+import { FeatureGuardService } from '../subscriptions/feature-guard.service';
+import { BulkFileOperationDto, BulkFileTargetDto } from './dto/bulk-file-operation.dto';
 import { CompleteUploadSessionDto } from './dto/complete-upload-session.dto';
 import { CreateUploadSessionDto } from './dto/create-upload-session.dto';
+import { LargeFilesQueryDto } from './dto/large-files-query.dto';
 import { ListFilesQueryDto } from './dto/list-files-query.dto';
+import { TrashFilesQueryDto } from './dto/trash-files-query.dto';
+import { UploadFromUrlDto } from './dto/upload-from-url.dto';
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const FILE_CACHE_WRITE_BATCH_SIZE = 5;
 const THUMBNAIL_METADATA_TTL_MS = 12 * 60 * 60 * 1000;
 const THUMBNAIL_BYTES_TTL_MS = 5 * 60 * 1000;
+const BULK_FILE_CONCURRENCY = 3;
+const DEFAULT_URL_UPLOAD_MAX_BYTES = 250 * 1024 * 1024;
 
 type ThumbnailCacheEntry = {
   bytes: Buffer;
@@ -30,9 +42,12 @@ export class FilesService {
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
     private readonly driveService: DriveService,
+    private readonly googleAuth: GoogleAuthService,
     private readonly audit: AuditService,
     private readonly queue: QueueService,
     private readonly configService: ConfigService,
+    private readonly activity: ActivityService,
+    private readonly featureGuard: FeatureGuardService,
   ) {}
 
   async listFiles(userId: string, query: ListFilesQueryDto) {
@@ -60,6 +75,22 @@ export class FilesService {
       ...(query.fileType ? { fileType: query.fileType } : {}),
       ...(query.search ? { name: { contains: query.search, mode: 'insensitive' } } : {}),
       ...(query.parentId ? { driveParentId: query.parentId } : {}),
+      ...(query.minSizeBytes || query.maxSizeBytes
+        ? {
+            sizeBytes: {
+              ...(query.minSizeBytes ? { gte: BigInt(query.minSizeBytes) } : {}),
+              ...(query.maxSizeBytes ? { lte: BigInt(query.maxSizeBytes) } : {}),
+            },
+          }
+        : {}),
+      ...(query.modifiedAfter || query.modifiedBefore
+        ? {
+            driveModifiedAt: {
+              ...(query.modifiedAfter ? { gte: new Date(query.modifiedAfter) } : {}),
+              ...(query.modifiedBefore ? { lte: new Date(query.modifiedBefore) } : {}),
+            },
+          }
+        : {}),
     };
     const orderBy = this.buildOrderBy(query);
     const [total, data] = await this.prisma.$transaction([
@@ -93,6 +124,92 @@ export class FilesService {
         limit: query.limit,
         lastPage: Math.ceil(total / query.limit),
       },
+    };
+  }
+
+  async getLargeFiles(userId: string, query: LargeFilesQueryDto) {
+    if (query.accountId) {
+      await this.getOwnedAccount(userId, query.accountId);
+    }
+
+    return this.prisma.fileCache.findMany({
+      where: {
+        account: { userId },
+        ...(query.accountId ? { accountId: query.accountId } : {}),
+        isFolder: false,
+        sizeBytes: { gte: query.minSizeBytes ? BigInt(query.minSizeBytes) : 100n * 1024n * 1024n },
+      },
+      orderBy: { sizeBytes: 'desc' },
+      take: query.limit,
+      include: {
+        account: {
+          select: {
+            id: true,
+            googleEmail: true,
+            displayName: true,
+            storageLimit: true,
+            storageUsed: true,
+            isDefault: true,
+          },
+        },
+      },
+    });
+  }
+
+  async getCleanupSuggestions(userId: string) {
+    const [largestFiles, duplicateGroups, accounts, oldLargeVideos] = await Promise.all([
+      this.getLargeFiles(userId, { limit: 20 }),
+      this.prisma.duplicateGroup.findMany({
+        where: { userId },
+        orderBy: { sizeBytes: 'desc' },
+        take: 20,
+      }),
+      this.prisma.connectedAccount.findMany({
+        where: { userId },
+        orderBy: { storageUsed: 'desc' },
+        select: {
+          id: true,
+          googleEmail: true,
+          displayName: true,
+          storageLimit: true,
+          storageUsed: true,
+          isDefault: true,
+        },
+      }),
+      this.prisma.fileCache.findMany({
+        where: {
+          account: { userId },
+          fileType: 'VIDEO',
+          sizeBytes: { gte: 100n * 1024n * 1024n },
+          driveModifiedAt: { lt: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000) },
+        },
+        orderBy: { sizeBytes: 'desc' },
+        take: 20,
+        include: {
+          account: {
+            select: { id: true, googleEmail: true, displayName: true },
+          },
+        },
+      }),
+    ]);
+
+    const duplicateRecoverableBytes = duplicateGroups.reduce((sum, group) => {
+      return sum + group.sizeBytes * BigInt(Math.max(group.fileIds.length - 1, 0));
+    }, 0n);
+    const nearQuotaAccounts = accounts.filter((account) => {
+      if (account.storageLimit <= 0n) return false;
+      return Number(account.storageUsed) / Number(account.storageLimit) >= 0.8;
+    });
+
+    return {
+      largestFiles,
+      duplicates: {
+        groups: duplicateGroups.length,
+        recoverableBytes: duplicateRecoverableBytes,
+        sample: duplicateGroups,
+      },
+      nearQuotaAccounts,
+      oldLargeVideos,
     };
   }
 
@@ -213,7 +330,16 @@ export class FilesService {
       action: AuditAction.UPLOAD_COMPLETED,
       metadata: { driveFileId, bytesUploaded },
     });
+    await this.activity.create({
+      userId,
+      type: ActivityEventType.UPLOAD_COMPLETED,
+      message: `${session.fileName} uploaded successfully`,
+      accountId: session.accountId,
+      fileId: driveFileId,
+      metadata: { sessionId, bytesUploaded },
+    });
     await this.invalidateAccountCache(session.accountId);
+    await this.queue.enqueueDuplicateScan(userId, 5000);
   }
 
   async syncAccount(userId: string, accountId: string): Promise<void> {
@@ -274,7 +400,7 @@ export class FilesService {
       throw new ForbiddenException('Account does not belong to user');
     }
 
-    await this.driveService.deleteFile(this.crypto.decrypt(account.accessToken), fileId);
+    await this.driveService.trashFile(this.crypto.decrypt(account.accessToken), fileId);
     await this.prisma.fileCache.deleteMany({ where: { accountId, driveFileId: fileId } });
     await this.invalidateAccountCache(accountId);
     await this.audit.log({
@@ -283,6 +409,173 @@ export class FilesService {
       resourceId: fileId,
       action: AuditAction.FILE_DELETED,
     });
+    await this.activity.create({
+      userId,
+      type: ActivityEventType.FILE_TRASHED,
+      message: `File moved to trash`,
+      accountId,
+      fileId,
+    });
+  }
+
+  async bulkDelete(userId: string, dto: BulkFileOperationDto) {
+    const results = this.createBulkResults();
+    for (const batch of chunk(dto.files, BULK_FILE_CONCURRENCY)) {
+      await Promise.all(batch.map((file) => this.runBulkFileOperation(results, file, (target) => this.trashFile(userId, target))));
+    }
+    await this.queue.enqueueQuotaRefresh(userId);
+    await this.queue.enqueueDuplicateScan(userId, 5000);
+    return results;
+  }
+
+  async bulkRestore(userId: string, dto: BulkFileOperationDto) {
+    const results = this.createBulkResults();
+    for (const batch of chunk(dto.files, BULK_FILE_CONCURRENCY)) {
+      await Promise.all(batch.map((file) => this.runBulkFileOperation(results, file, (target) => this.restoreFile(userId, target))));
+    }
+    await this.queue.enqueueQuotaRefresh(userId);
+    await this.queue.enqueueDuplicateScan(userId, 5000);
+    return results;
+  }
+
+  async getPreviewUrl(userId: string, accountId: string, fileId: string) {
+    await this.featureGuard.requireFeature(userId, 'file_preview');
+    const { account, file } = await this.getOwnedAccountFile(userId, accountId, fileId);
+    if (file.mimeType.startsWith('application/vnd.google-apps.')) {
+      const refreshed = await this.driveService.getFile(this.crypto.decrypt(account.accessToken), fileId);
+      return {
+        previewUrl: refreshed.webViewLink || file.webViewLink,
+        type: 'embed',
+        mimeType: refreshed.mimeType,
+        name: refreshed.name,
+      };
+    }
+
+    return {
+      previewUrl: `/files/stream/${encodeURIComponent(accountId)}/${encodeURIComponent(fileId)}`,
+      type: 'stream',
+      mimeType: file.mimeType,
+      name: file.name,
+    };
+  }
+
+  async listTrash(userId: string, query: TrashFilesQueryDto) {
+    const account = await this.getOwnedAccount(userId, query.accountId);
+    const result = await this.driveService.listFiles(this.crypto.decrypt(account.accessToken), {
+      pageSize: query.limit,
+      pageToken: query.pageToken,
+      query: 'trashed=true',
+    });
+
+    return {
+      data: result.files.map((file) => ({
+        ...file,
+        account: {
+          id: account.id,
+          googleEmail: account.googleEmail,
+          displayName: account.displayName,
+          avatarUrl: account.avatarUrl,
+        },
+      })),
+      nextPageToken: result.nextPageToken,
+    };
+  }
+
+  async restoreTrashedFile(userId: string, accountId: string, fileId: string) {
+    const account = await this.getOwnedAccount(userId, accountId);
+    const accessToken = this.crypto.decrypt(account.accessToken);
+    await this.driveService.restoreFile(accessToken, fileId);
+    const restored = await this.driveService.getFile(accessToken, fileId);
+    await this.upsertCacheFile(accountId, restored);
+    await this.invalidateAccountCache(accountId);
+    await this.activity.create({
+      userId,
+      type: ActivityEventType.FILE_RESTORED,
+      message: `${restored.name} restored from trash`,
+      accountId,
+      fileId,
+    });
+    return { success: true };
+  }
+
+  async streamFile(userId: string, accountId: string, fileId: string, res: import('express').Response): Promise<void> {
+    const { account, file } = await this.getOwnedAccountFile(userId, accountId, fileId);
+    if (file.mimeType.startsWith('application/vnd.google-apps.')) {
+      throw new BadRequestException('Google Workspace files cannot be streamed as raw media');
+    }
+
+    const googleRes = await this.driveService.downloadFile(this.crypto.decrypt(account.accessToken), fileId);
+    if (!googleRes.body) {
+      throw new NotFoundException('File stream unavailable');
+    }
+
+    const contentLength = googleRes.headers.get('content-length');
+    res.setHeader('Content-Type', googleRes.headers.get('content-type') || file.mimeType || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.setHeader('Content-Disposition', `inline; filename="${safeHeaderFileName(file.name)}"`);
+    if (contentLength) {
+      res.setHeader('Content-Length', contentLength);
+    }
+    Readable.fromWeb(googleRes.body as never).pipe(res);
+  }
+
+  async uploadFromUrl(userId: string, dto: UploadFromUrlDto) {
+    await this.featureGuard.requireFeature(userId, 'upload_from_url');
+    const account = await this.getOwnedAccount(userId, dto.accountId);
+    const maxBytes = this.getUrlUploadMaxBytes();
+    const { response, resolvedUrl } = await this.fetchRemoteUrl(dto.url, maxBytes);
+    if (!response.body) {
+      throw new BadRequestException('Remote URL did not return a file body');
+    }
+
+    const contentType = response.headers.get('content-type') || 'application/octet-stream';
+    const contentLength = response.headers.get('content-length');
+    const fileName = dto.fileName || extractFilenameFromUrl(resolvedUrl) || 'download';
+    const accessToken = this.crypto.decrypt(account.accessToken);
+    const sessionUri = await this.driveService.createResumableUploadSession(accessToken, {
+      name: fileName,
+      mimeType: contentType,
+      fileSize: contentLength ? Number(contentLength) : undefined,
+      origin: this.getFrontendOrigin(),
+    });
+
+    const limitedBody = Readable.fromWeb(response.body as never).pipe(new ByteLimitTransform(maxBytes));
+    const uploadRes = await fetch(sessionUri, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': contentType,
+        ...(contentLength ? { 'Content-Length': contentLength } : {}),
+      },
+      body: limitedBody as never,
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
+    if (!uploadRes.ok) {
+      const errorText = await uploadRes.text();
+      throw new BadRequestException(`Upload to Drive failed: ${uploadRes.status} ${errorText}`);
+    }
+
+    const uploaded = (await uploadRes.json()) as { id?: string };
+    if (!uploaded.id) {
+      throw new BadRequestException('Drive upload did not return a file id');
+    }
+    const driveFile = await this.driveService.getFile(accessToken, uploaded.id);
+    await this.upsertCacheFile(account.id, driveFile);
+    await this.invalidateAccountCache(account.id);
+    await this.queue.enqueueQuotaRefresh(userId);
+    await this.queue.enqueueDuplicateScan(userId, 5000);
+    await this.activity.create({
+      userId,
+      type: ActivityEventType.URL_UPLOAD_COMPLETED,
+      message: `${driveFile.name} saved from URL`,
+      accountId: account.id,
+      fileId: uploaded.id,
+      metadata: { sourceUrl: resolvedUrl },
+    });
+    return {
+      driveFileId: uploaded.id,
+      fileName: driveFile.name,
+      accountId: account.id,
+    };
   }
 
   private async isCacheStale(accountId: string): Promise<boolean> {
@@ -300,6 +593,12 @@ export class FilesService {
       return;
     }
 
+    // Skip sync entirely if the account already needs re-auth
+    if (account.status === 'REAUTH_REQUIRED') {
+      this.logger.warn(`Skipping file sync for account ${account.id} (${account.googleEmail}) — re-authentication required`);
+      return;
+    }
+
     const syncJob = await this.prisma.syncJob.create({
       data: {
         userId: account.userId,
@@ -314,8 +613,8 @@ export class FilesService {
       action: AuditAction.FILE_SYNC_STARTED,
     });
 
-    const accessToken = this.crypto.decrypt(account.accessToken);
     try {
+      const accessToken = await this.getValidAccessToken(account);
       const result = account.driveChangesPageToken
         ? await this.incrementalSync(account.id, accessToken, account.driveChangesPageToken)
         : await this.fullSync(account.id, accessToken);
@@ -341,10 +640,31 @@ export class FilesService {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Drive sync failed';
-      await this.prisma.connectedAccount.update({
-        where: { id: account.id },
-        data: { status: 'SYNC_FAILED', lastSyncError: message },
-      });
+      const isAuthError = error instanceof ForbiddenException || error instanceof UnauthorizedException;
+
+      if (isAuthError) {
+        // Token refresh was attempted and failed, or scope was revoked — mark REAUTH_REQUIRED
+        await this.prisma.connectedAccount.update({
+          where: { id: account.id },
+          data: {
+            status: 'REAUTH_REQUIRED',
+            reauthRequiredAt: new Date(),
+            lastSyncError: message,
+          },
+        });
+        await this.audit.log({
+          userId: account.userId,
+          accountId: account.id,
+          action: AuditAction.GOOGLE_ACCOUNT_REAUTH_REQUIRED,
+        });
+        this.logger.warn(`Account ${account.id} (${account.googleEmail}) marked REAUTH_REQUIRED during file sync: ${message}`);
+      } else {
+        await this.prisma.connectedAccount.update({
+          where: { id: account.id },
+          data: { status: 'SYNC_FAILED', lastSyncError: message },
+        });
+      }
+
       await this.prisma.syncJob.update({
         where: { id: syncJob.id },
         data: { status: 'FAILED', error: message, finishedAt: new Date() },
@@ -357,6 +677,55 @@ export class FilesService {
         metadata: { message },
       });
       this.logger.error(`Drive file sync failed for account ${account.id}`, error instanceof Error ? error.stack : String(error));
+    }
+  }
+
+  /**
+   * Gets a valid access token for the account, attempting a refresh if needed.
+   * If refresh succeeds but Drive still returns 403, throws ForbiddenException.
+   */
+  private async getValidAccessToken(account: ConnectedAccount): Promise<string> {
+    const currentToken = this.crypto.decrypt(account.accessToken);
+
+    // If token hasn't expired yet, use it directly
+    if (account.expiresAt && account.expiresAt.getTime() > Date.now() + 60_000) {
+      return currentToken;
+    }
+
+    // Token is expired or about to expire — attempt refresh
+    if (!account.refreshToken) {
+      throw new ForbiddenException(`No refresh token available for account ${account.googleEmail}. Please reconnect.`);
+    }
+
+    try {
+      const creds = await this.googleAuth.refreshAccessToken(this.crypto.decrypt(account.refreshToken));
+      if (!creds.access_token || !creds.expiry_date) {
+        throw new ForbiddenException(`Token refresh returned no credentials for account ${account.googleEmail}`);
+      }
+
+      await this.prisma.connectedAccount.update({
+        where: { id: account.id },
+        data: {
+          accessToken: this.crypto.encrypt(creds.access_token),
+          ...(creds.refresh_token ? { refreshToken: this.crypto.encrypt(creds.refresh_token) } : {}),
+          expiresAt: new Date(creds.expiry_date),
+          status: 'ACTIVE',
+          reauthRequiredAt: null,
+          lastSyncError: null,
+        },
+      });
+
+      await this.audit.log({
+        userId: account.userId,
+        accountId: account.id,
+        action: AuditAction.GOOGLE_ACCOUNT_REAUTHED,
+      });
+
+      this.logger.log(`Token refreshed for account ${account.id} (${account.googleEmail}) before file sync`);
+      return creds.access_token;
+    } catch (error) {
+      this.logger.warn(`Token refresh failed for account ${account.id} (${account.googleEmail}): ${error instanceof Error ? error.message : String(error)}`);
+      throw new ForbiddenException(`Token refresh failed for account ${account.googleEmail}. Please reconnect.`);
     }
   }
 
@@ -555,6 +924,152 @@ export class FilesService {
     return !file.thumbnailUpdatedAt || Date.now() - file.thumbnailUpdatedAt.getTime() > THUMBNAIL_METADATA_TTL_MS;
   }
 
+  private async getOwnedAccount(userId: string, accountId: string): Promise<ConnectedAccount> {
+    const account = await this.prisma.connectedAccount.findUnique({ where: { id: accountId } });
+    if (!account || account.userId !== userId) {
+      throw new ForbiddenException('Account does not belong to user');
+    }
+    return account;
+  }
+
+  private async trashFile(userId: string, file: BulkFileTargetDto): Promise<void> {
+    const account = await this.getOwnedAccount(userId, file.accountId);
+    await this.driveService.trashFile(this.crypto.decrypt(account.accessToken), file.driveFileId);
+    await this.prisma.fileCache.deleteMany({ where: { accountId: file.accountId, driveFileId: file.driveFileId } });
+    await this.invalidateAccountCache(file.accountId);
+    await this.audit.log({
+      userId,
+      accountId: file.accountId,
+      resourceId: file.driveFileId,
+      action: AuditAction.FILE_DELETED,
+    });
+    await this.activity.create({
+      userId,
+      type: ActivityEventType.FILE_TRASHED,
+      message: `File moved to trash`,
+      accountId: file.accountId,
+      fileId: file.driveFileId,
+    });
+  }
+
+  private async restoreFile(userId: string, file: BulkFileTargetDto): Promise<void> {
+    const account = await this.getOwnedAccount(userId, file.accountId);
+    const accessToken = this.crypto.decrypt(account.accessToken);
+    await this.driveService.restoreFile(accessToken, file.driveFileId);
+    const restored = await this.driveService.getFile(accessToken, file.driveFileId);
+    await this.upsertCacheFile(file.accountId, restored);
+    await this.invalidateAccountCache(file.accountId);
+    await this.activity.create({
+      userId,
+      type: ActivityEventType.FILE_RESTORED,
+      message: `${restored.name} restored from trash`,
+      accountId: file.accountId,
+      fileId: file.driveFileId,
+    });
+  }
+
+  private createBulkResults(): {
+    success: number;
+    failed: number;
+    errors: Array<{ accountId: string; driveFileId: string; message: string }>;
+  } {
+    return { success: 0, failed: 0, errors: [] };
+  }
+
+  private async runBulkFileOperation(
+    results: {
+      success: number;
+      failed: number;
+      errors: Array<{ accountId: string; driveFileId: string; message: string }>;
+    },
+    file: BulkFileTargetDto,
+    operation: (file: BulkFileTargetDto) => Promise<void>,
+  ): Promise<void> {
+    try {
+      await operation(file);
+      results.success += 1;
+    } catch (error) {
+      results.failed += 1;
+      results.errors.push({
+        accountId: file.accountId,
+        driveFileId: file.driveFileId,
+        message: error instanceof Error ? error.message : 'File operation failed',
+      });
+    }
+  }
+
+  private async fetchRemoteUrl(url: string, maxBytes: number): Promise<{ response: Response; resolvedUrl: string }> {
+    let currentUrl = url;
+    for (let redirect = 0; redirect <= 5; redirect += 1) {
+      await this.assertPublicHttpUrl(currentUrl);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
+      try {
+        const response = await fetch(currentUrl, {
+          method: 'GET',
+          redirect: 'manual',
+          signal: controller.signal,
+        });
+
+        if ([301, 302, 303, 307, 308].includes(response.status)) {
+          const location = response.headers.get('location');
+          if (!location) {
+            throw new BadRequestException('Remote URL redirected without a location header');
+          }
+          currentUrl = new URL(location, currentUrl).toString();
+          continue;
+        }
+
+        if (!response.ok) {
+          throw new BadRequestException('Could not fetch from URL');
+        }
+
+        const contentLength = response.headers.get('content-length');
+        if (contentLength && Number(contentLength) > maxBytes) {
+          throw new BadRequestException('Remote file is larger than the upload limit');
+        }
+
+        return { response, resolvedUrl: currentUrl };
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    throw new BadRequestException('Remote URL redirected too many times');
+  }
+
+  private async assertPublicHttpUrl(url: string): Promise<void> {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new BadRequestException('Invalid URL');
+    }
+
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw new BadRequestException('Only HTTP and HTTPS URLs are supported');
+    }
+
+    if (!parsed.hostname || parsed.username || parsed.password) {
+      throw new BadRequestException('URL is not allowed');
+    }
+
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
+      throw new BadRequestException('Local URLs are not allowed');
+    }
+
+    const addresses = isIP(hostname) ? [{ address: hostname }] : await lookup(hostname, { all: true });
+    if (!addresses.length || addresses.some(({ address }) => isPrivateIp(address))) {
+      throw new BadRequestException('Private network URLs are not allowed');
+    }
+  }
+
+  private getUrlUploadMaxBytes(): number {
+    const configured = Number(this.configService.get<string>('URL_UPLOAD_MAX_BYTES'));
+    return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_URL_UPLOAD_MAX_BYTES;
+  }
+
   private async getOwnedAccountFile(userId: string, accountId: string, fileId: string) {
     const account = await this.prisma.connectedAccount.findUnique({ where: { id: accountId } });
     if (!account || account.userId !== userId) {
@@ -616,4 +1131,68 @@ function chunk<T>(items: T[], size: number): T[][] {
     chunks.push(items.slice(index, index + size));
   }
   return chunks;
+}
+
+function safeHeaderFileName(fileName: string): string {
+  return fileName.replace(/[\r\n"]/g, '_');
+}
+
+function extractFilenameFromUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const segment = parsed.pathname.split('/').filter(Boolean).pop();
+    if (!segment) return null;
+    return decodeURIComponent(segment).replace(/[/\\]/g, '_').slice(0, 255) || null;
+  } catch {
+    return null;
+  }
+}
+
+function isPrivateIp(address: string): boolean {
+  const version = isIP(address);
+  if (version === 4) {
+    const parts = address.split('.').map((part) => Number(part));
+    const [first, second] = parts;
+    return (
+      first === 0 ||
+      first === 10 ||
+      first === 127 ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168) ||
+      (first === 100 && second >= 64 && second <= 127) ||
+      first >= 224
+    );
+  }
+
+  if (version === 6) {
+    const normalized = address.toLowerCase();
+    if (normalized === '::1' || normalized === '::' || normalized.startsWith('fc') || normalized.startsWith('fd')) {
+      return true;
+    }
+    if (normalized.startsWith('fe80:')) {
+      return true;
+    }
+    const mappedIpv4 = normalized.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    return mappedIpv4 ? isPrivateIp(mappedIpv4[1]) : false;
+  }
+
+  return true;
+}
+
+class ByteLimitTransform extends Transform {
+  private total = 0;
+
+  constructor(private readonly maxBytes: number) {
+    super();
+  }
+
+  override _transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback): void {
+    this.total += chunk.length;
+    if (this.total > this.maxBytes) {
+      callback(new BadRequestException('Remote file is larger than the upload limit'));
+      return;
+    }
+    callback(null, chunk);
+  }
 }

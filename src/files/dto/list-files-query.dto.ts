@@ -1,6 +1,6 @@
 import { FileType } from '@prisma/client';
 import { Transform } from 'class-transformer';
-import { IsEnum, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 
 export class ListFilesQueryDto {
   @IsOptional()
@@ -18,6 +18,24 @@ export class ListFilesQueryDto {
   @IsOptional()
   @IsString()
   parentId?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => String(value))
+  @Matches(/^\d+$/)
+  minSizeBytes?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => String(value))
+  @Matches(/^\d+$/)
+  maxSizeBytes?: string;
+
+  @IsOptional()
+  @IsDateString()
+  modifiedAfter?: string;
+
+  @IsOptional()
+  @IsDateString()
+  modifiedBefore?: string;
 
   @IsOptional()
   @IsIn(['name', 'size', 'modifiedAt'])
