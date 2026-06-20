@@ -15,6 +15,33 @@ export class PaymentsService {
     private readonly geo: GeoService,
   ) {}
 
+  async getPricing(): Promise<{
+    plans: {
+      key: string;
+      amount: number;
+      currency: string;
+      interval: string;
+      isActive: boolean;
+    }[];
+  }> {
+    const configs = await this.prisma.pricingConfig.findMany({
+      where: { isActive: true },
+      select: { key: true, amount: true, currency: true, interval: true, isActive: true },
+    });
+
+    // If admin hasn't configured pricing yet, return sensible defaults
+    if (configs.length === 0) {
+      return {
+        plans: [
+          { key: 'pro_ngn', amount: 1500, currency: 'NGN', interval: 'month', isActive: true },
+          { key: 'pro_usd', amount: 2, currency: 'USD', interval: 'month', isActive: true },
+        ],
+      };
+    }
+
+    return { plans: configs };
+  }
+
   async createCheckoutSession(userId: string, ip: string): Promise<{ checkoutUrl: string }> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
