@@ -1,15 +1,12 @@
 import { BadGatewayException, Injectable, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import DodoPayments from 'dodopayments';
-import { BillingCurrency } from '../common/geo/geo.service';
 
 type CheckoutParams = {
   productId: string;
   customerEmail: string;
   customerName?: string | null;
   customerId?: string;
-  currency: BillingCurrency;
-  country: string;
   metadata: Record<string, string>;
   redirectUrl: string;
   cancelUrl: string;
@@ -40,15 +37,9 @@ export class DodoClient {
         customer: params.customerId
           ? { customer_id: params.customerId }
           : { email: params.customerEmail, name: params.customerName ?? undefined },
-        billing_currency: params.currency,
-        billing_address: params.country === 'UNKNOWN' ? undefined : { country: params.country as never },
         metadata: params.metadata,
         return_url: params.redirectUrl,
         cancel_url: params.cancelUrl,
-        feature_flags: {
-          allow_currency_selection: false,
-          allow_customer_editing_email: false,
-        },
       });
       const url = session.checkout_url;
       if (!url) throw new BadGatewayException('Dodo did not return a checkout URL');

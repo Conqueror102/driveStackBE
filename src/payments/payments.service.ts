@@ -1,7 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AdminAuditService } from '../common/admin-audit/admin-audit.service';
-import { BillingCurrency, GeoService } from '../common/geo/geo.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { DodoClient } from './dodo.client';
 
@@ -12,7 +11,6 @@ export class PaymentsService {
     private readonly dodo: DodoClient,
     private readonly config: ConfigService,
     private readonly audit: AdminAuditService,
-    private readonly geo: GeoService,
   ) {}
 
   async getPricing(): Promise<{
@@ -52,17 +50,14 @@ export class PaymentsService {
       throw new ConflictException('Already subscribed to Pro');
     }
 
-    const currency = this.geo.getCurrency(user.country ?? 'UNKNOWN');
-    const productId = await this.getProductId(currency);
+    const productId = await this.getProductId();
     const frontendUrl = this.config.get<string>('FRONTEND_URL') || 'http://localhost:3000';
     const session = await this.dodo.createSubscriptionCheckout({
       productId,
       customerEmail: user.email,
       customerName: user.displayName,
       customerId: user.subscription?.dodoCustomerId ?? undefined,
-      currency,
-      country: user.country ?? 'UNKNOWN',
-      metadata: { userId, currency },
+      metadata: { userId },
       redirectUrl: `${frontendUrl}/payment/success`,
       cancelUrl: `${frontendUrl}/pricing`,
     });
@@ -72,7 +67,7 @@ export class PaymentsService {
       action: 'payment.checkout_created',
       entity: 'Subscription',
       entityId: userId,
-      metadata: { currency, productId, checkoutSessionId: session.id },
+      metadata: { productId, checkoutSessionId: session.id },
       ipAddress: ip,
     });
 
@@ -107,15 +102,16 @@ export class PaymentsService {
     return this.dodo.getCustomerPortal(sub.dodoCustomerId);
   }
 
-  private async getProductId(currency: BillingCurrency): Promise<string> {
+  private async getProductId(): Promise<string> {
+    // Check if admin has configured a product ID in the database
     const pricing = await this.prisma.pricingConfig.findFirst({
-      where: { key: currency === 'NGN' ? 'pro_ngn' : 'pro_usd', isActive: true },
+      where: { isActive: true },
     });
     if (pricing?.productId) return pricing.productId;
 
-    const envKey = currency === 'NGN' ? 'DODO_PRO_PRODUCT_ID_NGN' : 'DODO_PRO_PRODUCT_ID_USD';
-    const productId = this.config.get<string>(envKey);
-    if (!productId) throw new InternalServerErrorException(`No product ID configured for currency: ${currency}`);
+    // Fall back to env var — single USD product, Dodo handles currency via Adaptive Currency
+    const productId = this.config.get<string>('DODO_PRO_PRODUCT_ID');
+    if (!productId) throw new InternalServerErrorException('No Dodo product ID configured');
     return productId;
   }
 }
