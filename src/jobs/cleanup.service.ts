@@ -92,17 +92,30 @@ export class CleanupService {
 
   @Cron('5 0 * * *')
   async takeStorageSnapshot() {
-    const accounts = await this.prisma.connectedAccount.findMany({
-      select: { id: true, storageUsed: true },
-    });
+    // Use cursor-based pagination to avoid loading all accounts into memory at once
+    const BATCH_SIZE = 1000;
+    let cursor: string | undefined;
 
-    if (accounts.length) {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const accounts = await this.prisma.connectedAccount.findMany({
+        select: { id: true, storageUsed: true },
+        orderBy: { id: 'asc' },
+        take: BATCH_SIZE,
+        ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      });
+
+      if (accounts.length === 0) break;
+
       await this.prisma.storageSnapshot.createMany({
         data: accounts.map((account) => ({
           accountId: account.id,
           usedBytes: account.storageUsed,
         })),
       });
+
+      cursor = accounts[accounts.length - 1].id;
+      if (accounts.length < BATCH_SIZE) break;
     }
 
     const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
@@ -113,16 +126,31 @@ export class CleanupService {
 
   @Cron('15 0 * * *')
   async computeDuplicates() {
-    const users = await this.prisma.user.findMany({
-      where: { connectedAccounts: { some: {} } },
-      select: { id: true },
-    });
+    // Use cursor-based pagination to avoid loading all users into memory at once
+    const BATCH_SIZE = 500;
+    let cursor: string | undefined;
 
-    for (const user of users) {
-      const queued = await this.queue.enqueueDuplicateScan(user.id);
-      if (!queued) {
-        await this.duplicates.runDuplicateScanForUser(user.id);
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const users = await this.prisma.user.findMany({
+        where: { connectedAccounts: { some: {} } },
+        select: { id: true },
+        orderBy: { id: 'asc' },
+        take: BATCH_SIZE,
+        ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      });
+
+      if (users.length === 0) break;
+
+      for (const user of users) {
+        const queued = await this.queue.enqueueDuplicateScan(user.id);
+        if (!queued) {
+          await this.duplicates.runDuplicateScanForUser(user.id);
+        }
       }
+
+      cursor = users[users.length - 1].id;
+      if (users.length < BATCH_SIZE) break;
     }
   }
 

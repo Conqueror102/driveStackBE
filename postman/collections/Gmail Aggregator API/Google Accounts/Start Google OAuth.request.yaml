@@ -1,0 +1,5 @@
+$kind: http-request
+description: Starts OAuth. In normal use, open this in a browser because Google consent is interactive.
+url: "{{base_url}}/google-accounts/connect"
+method: GET
+order: 2000

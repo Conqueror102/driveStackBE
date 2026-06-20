@@ -1,0 +1,16 @@
+$kind: http-request
+url: "{{base_url}}/admin/users/{{user_id}}/upgrade"
+method: POST
+headers:
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+      "adminNote": "Support request granted 1 month pro"
+    }
+auth:
+  type: bearer
+  credentials:
+    token: "{{admin_token}}"
+order: 12000

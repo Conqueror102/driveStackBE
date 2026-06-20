@@ -1,0 +1,13 @@
+$kind: http-request
+url: "{{base_url}}/files/upload-session/{{upload_session_id}}"
+method: PATCH
+headers:
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+      "driveFileId": "{{drive_file_id}}",
+      "bytesUploaded": "1024"
+    }
+order: 5000

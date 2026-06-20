@@ -1,0 +1,9 @@
+$kind: http-request
+description: Invalidates existing admin JWTs by incrementing the admin token version.
+url: "{{base_url}}/admin/auth/logout"
+method: POST
+auth:
+  type: bearer
+  credentials:
+    token: "{{admin_token}}"
+order: 9000

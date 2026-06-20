@@ -1,0 +1,26 @@
+$kind: http-request
+description: Logs in and stores jwt_token from the response.
+url: "{{base_url}}/auth/login"
+method: POST
+headers:
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+      "email": "{{email}}",
+      "password": "{{password}}"
+    }
+auth:
+  type: noauth
+scripts:
+  - type: afterResponse
+    code: |-
+      pm.test('Login returns token', function () {
+        pm.response.to.have.status(201);
+        const json = pm.response.json();
+        pm.expect(json.token).to.be.a('string');
+        pm.environment.set('jwt_token', json.token);
+      });
+    language: text/javascript
+order: 2000

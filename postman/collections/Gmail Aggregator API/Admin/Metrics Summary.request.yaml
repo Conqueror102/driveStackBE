@@ -1,0 +1,9 @@
+$kind: http-request
+description: Returns total users, connected accounts, file cache count, uploads, request totals, and recent request volume.
+url: "{{base_url}}/admin/metrics/summary"
+method: GET
+auth:
+  type: bearer
+  credentials:
+    token: "{{admin_token}}"
+order: 3000

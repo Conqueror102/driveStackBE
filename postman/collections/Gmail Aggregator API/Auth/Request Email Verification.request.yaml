@@ -1,0 +1,13 @@
+$kind: http-request
+url: "{{base_url}}/auth/email/request-verification"
+method: POST
+scripts:
+  - type: afterResponse
+    code: |-
+      pm.test('Email verification token requested', function () {
+        pm.response.to.have.status(201);
+        const json = pm.response.json();
+        if (json.token) pm.environment.set('email_verification_token', json.token);
+      });
+    language: text/javascript
+order: 4000

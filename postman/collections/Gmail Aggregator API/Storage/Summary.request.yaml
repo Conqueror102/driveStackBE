@@ -1,0 +1,4 @@
+$kind: http-request
+url: "{{base_url}}/storage/summary"
+method: GET
+order: 1000

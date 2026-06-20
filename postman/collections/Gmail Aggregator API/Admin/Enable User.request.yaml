@@ -1,0 +1,16 @@
+$kind: http-request
+url: "{{base_url}}/admin/users/{{user_id}}/status"
+method: PATCH
+headers:
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+      "status": "ACTIVE"
+    }
+auth:
+  type: bearer
+  credentials:
+    token: "{{admin_token}}"
+order: 7000

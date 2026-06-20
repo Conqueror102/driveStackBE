@@ -1,0 +1,21 @@
+$kind: http-request
+url: "{{base_url}}/admin/pricing"
+method: PUT
+headers:
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+      "key": "pro_usd",
+      "productId": "prod_new_id",
+      "amount": 299,
+      "currency": "USD",
+      "interval": "month",
+      "isActive": true
+    }
+auth:
+  type: bearer
+  credentials:
+    token: "{{admin_token}}"
+order: 11000

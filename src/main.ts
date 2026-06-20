@@ -2,8 +2,9 @@ import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import express from 'express';
-import helmet from 'helmet';
+import * as express from 'express';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const helmet = require('helmet');
 import { AppModule } from './app.module';
 
 // Prisma BigInt fields cannot be serialized by JSON.stringify by default.

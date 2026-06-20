@@ -1,0 +1,14 @@
+$kind: http-request
+description: Invalidates existing JWTs by incrementing tokenVersion. Run Login again after this request.
+url: "{{base_url}}/auth/logout"
+method: POST
+scripts:
+  - type: afterResponse
+    code: |-
+      pm.test('Logout invalidates current token generation', function () {
+        pm.response.to.have.status(201);
+        const json = pm.response.json();
+        pm.expect(json.success).to.equal(true);
+      });
+    language: text/javascript
+order: 9000

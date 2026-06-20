@@ -1,0 +1,10 @@
+$kind: http-request
+description: Manual callback test. Usually Google calls this after browser login.
+url: "{{base_url}}/google-accounts/callback?code={{oauth_code}}&state={{oauth_state}}"
+method: GET
+queryParams:
+  code: "{{oauth_code}}"
+  state: "{{oauth_state}}"
+auth:
+  type: noauth
+order: 3000

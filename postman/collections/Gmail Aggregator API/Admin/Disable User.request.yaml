@@ -1,0 +1,17 @@
+$kind: http-request
+description: Disables an app user and invalidates their existing JWTs.
+url: "{{base_url}}/admin/users/{{user_id}}/status"
+method: PATCH
+headers:
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+      "status": "DISABLED"
+    }
+auth:
+  type: bearer
+  credentials:
+    token: "{{admin_token}}"
+order: 6000

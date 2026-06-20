@@ -1,0 +1,9 @@
+$kind: http-request
+url: "{{base_url}}/files?page=1&limit=50&sortBy=modifiedAt&sortOrder=desc"
+method: GET
+queryParams:
+  page: "1"
+  limit: "50"
+  sortBy: modifiedAt
+  sortOrder: desc
+order: 1000

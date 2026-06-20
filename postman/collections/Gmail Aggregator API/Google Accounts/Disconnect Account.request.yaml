@@ -1,0 +1,4 @@
+$kind: http-request
+url: "{{base_url}}/google-accounts/{{account_id}}"
+method: DELETE
+order: 5000

@@ -1,0 +1,13 @@
+$kind: http-request
+url: "{{base_url}}/files?accountId={{account_id}}&fileType=PDF&search=report&parentId={{parent_id}}&page=1&limit=25&sortBy=name&sortOrder=asc"
+method: GET
+queryParams:
+  accountId: "{{account_id}}"
+  fileType: PDF
+  search: report
+  parentId: "{{parent_id}}"
+  page: "1"
+  limit: "25"
+  sortBy: name
+  sortOrder: asc
+order: 2000

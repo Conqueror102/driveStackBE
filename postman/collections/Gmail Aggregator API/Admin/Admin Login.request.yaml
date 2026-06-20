@@ -1,0 +1,26 @@
+$kind: http-request
+description: Logs in an admin created with npm run admin:create and stores admin_token.
+url: "{{base_url}}/admin/auth/login"
+method: POST
+headers:
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+      "email": "{{admin_email}}",
+      "password": "{{admin_password}}"
+    }
+auth:
+  type: noauth
+scripts:
+  - type: afterResponse
+    code: |-
+      pm.test('Admin login returns token', function () {
+        pm.response.to.have.status(201);
+        const json = pm.response.json();
+        pm.expect(json.token).to.be.a('string');
+        pm.environment.set('admin_token', json.token);
+      });
+    language: text/javascript
+order: 1000

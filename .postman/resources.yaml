@@ -1,0 +1,22 @@
+# Use this workspace to collaborate
+workspace:
+  id: a4521c0b-e8a8-4652-88ab-56b81d5743c6
+
+localResources:
+  collections:
+    - ..\docs\Gmail-Aggregator.postman_collection.json
+  docs:
+    - ..\docs\RUNNING_AND_CREDENTIALS_GUIDE.md
+    - ..\docs\SYSTEM_DOCUMENTATION.md
+    - ..\docs\FRONTEND_INTEGRATION_GUIDE.md
+    - ..\README.md
+    - ..\backend-build-prompt.md
+    - ..\payment-backend-prompt.md
+    - ..\country-currency-prompt.md
+    - ..\security-prompt.md
+
+# Each entry here maps a local resource to one or more corresponding objects in Postman Cloud
+
+cloudResources:
+  collections:
+    ..\postman\collections\Gmail Aggregator API: 03bffb26-e019-46d7-bf5f-4bd0ae12cc9f

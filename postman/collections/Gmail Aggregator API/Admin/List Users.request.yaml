@@ -1,0 +1,29 @@
+$kind: http-request
+url: "{{base_url}}/admin/users?page=1&limit=25"
+method: GET
+queryParams:
+  - key: page
+    value: "1"
+  - key: limit
+    value: "25"
+  - key: search
+    value: ""
+    disabled: true
+  - key: status
+    value: ACTIVE
+    disabled: true
+auth:
+  type: bearer
+  credentials:
+    token: "{{admin_token}}"
+scripts:
+  - type: afterResponse
+    code: |-
+      pm.test('List users returns paginated users', function () {
+        pm.response.to.have.status(200);
+        const json = pm.response.json();
+        pm.expect(json.data).to.be.an('array');
+        if (json.data.length > 0) pm.environment.set('user_id', json.data[0].id);
+      });
+    language: text/javascript
+order: 4000

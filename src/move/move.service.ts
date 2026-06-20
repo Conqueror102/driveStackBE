@@ -433,16 +433,32 @@ export class MoveService {
       };
     }
 
-    const files = await this.prisma.fileCache.findMany({
-      where: { accountId: sourceAccountId },
-      select: { driveFileId: true, driveParentId: true, mimeType: true, sizeBytes: true, isFolder: true },
-    });
-    const childrenByParent = new Map<string, typeof files>();
-    for (const item of files) {
-      if (!item.driveParentId) continue;
-      const children = childrenByParent.get(item.driveParentId) || [];
-      children.push(item);
-      childrenByParent.set(item.driveParentId, children);
+    // Use cursor-based pagination to avoid loading all files into memory at once
+    const BATCH_SIZE = 5000;
+    const childrenByParent = new Map<string, Array<{ driveFileId: string; driveParentId: string | null; mimeType: string; sizeBytes: bigint; isFolder: boolean }>>();
+    let cursor: string | undefined;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const batch = await this.prisma.fileCache.findMany({
+        where: { accountId: sourceAccountId },
+        select: { id: true, driveFileId: true, driveParentId: true, mimeType: true, sizeBytes: true, isFolder: true },
+        orderBy: { id: 'asc' },
+        take: BATCH_SIZE,
+        ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      });
+
+      if (batch.length === 0) break;
+
+      for (const item of batch) {
+        if (!item.driveParentId) continue;
+        const children = childrenByParent.get(item.driveParentId) || [];
+        children.push(item);
+        childrenByParent.set(item.driveParentId, children);
+      }
+
+      cursor = batch[batch.length - 1].id;
+      if (batch.length < BATCH_SIZE) break;
     }
 
     let totalItems = 1;

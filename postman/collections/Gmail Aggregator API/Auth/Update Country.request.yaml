@@ -1,0 +1,12 @@
+$kind: http-request
+url: "{{base_url}}/auth/country"
+method: PATCH
+headers:
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+      "country": "US"
+    }
+order: 10000

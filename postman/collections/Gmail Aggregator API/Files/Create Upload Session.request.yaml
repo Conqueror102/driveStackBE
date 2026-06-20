@@ -1,0 +1,27 @@
+$kind: http-request
+description: Creates a Google Drive resumable upload session. The response includes sessionUri.
+url: "{{base_url}}/files/upload-session"
+method: POST
+headers:
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+      "accountId": "{{account_id}}",
+      "fileName": "postman-test.txt",
+      "mimeType": "text/plain",
+      "fileSize": 1024
+    }
+scripts:
+  - type: afterResponse
+    code: |-
+      pm.test('Upload session created', function () {
+        pm.response.to.have.status(201);
+        const json = pm.response.json();
+        pm.expect(json.id).to.be.a('string');
+        pm.expect(json.sessionUri).to.be.a('string');
+        pm.environment.set('upload_session_id', json.id);
+      });
+    language: text/javascript
+order: 3000

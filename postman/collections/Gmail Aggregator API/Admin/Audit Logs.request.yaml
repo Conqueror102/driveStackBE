@@ -1,0 +1,11 @@
+$kind: http-request
+url: "{{base_url}}/admin/audit-logs?page=1&limit=50"
+method: GET
+queryParams:
+  page: "1"
+  limit: "50"
+auth:
+  type: bearer
+  credentials:
+    token: "{{admin_token}}"
+order: 8000

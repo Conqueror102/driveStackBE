@@ -1,0 +1,5 @@
+$kind: http-request
+description: Deletes the real Google Drive file. Use carefully.
+url: "{{base_url}}/files/{{account_id}}/{{drive_file_id}}"
+method: DELETE
+order: 7000

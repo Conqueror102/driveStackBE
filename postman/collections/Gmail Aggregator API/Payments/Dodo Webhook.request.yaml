@@ -1,0 +1,21 @@
+$kind: http-request
+url: "{{base_url}}/payments/webhook"
+method: POST
+headers:
+  Content-Type: application/json
+  webhook-id: test_id
+  webhook-signature: test_sig
+  webhook-timestamp: "12345678"
+body:
+  type: text
+  content: |-
+    {
+      "type": "subscription.active",
+      "data": {
+        "subscription_id": "sub_123",
+        "status": "ACTIVE"
+      }
+    }
+auth:
+  type: noauth
+order: 5000

@@ -740,15 +740,39 @@ export class FilesService {
       pageToken = page.nextPageToken;
     } while (pageToken);
 
-    await this.prisma.fileCache.deleteMany({
-      where: { accountId, driveFileId: { notIn: [...seenFileIds] } },
-    });
+    // Delete stale cache entries in batches instead of using a massive notIn clause
+    const DELETE_BATCH_SIZE = 5000;
+    let deleteCursor: string | undefined;
+    let removedCount = 0;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const cached = await this.prisma.fileCache.findMany({
+        where: { accountId },
+        select: { id: true, driveFileId: true },
+        orderBy: { id: 'asc' },
+        take: DELETE_BATCH_SIZE,
+        ...(deleteCursor ? { skip: 1, cursor: { id: deleteCursor } } : {}),
+      });
+
+      if (cached.length === 0) break;
+
+      const staleIds = cached.filter((c) => !seenFileIds.has(c.driveFileId)).map((c) => c.id);
+      if (staleIds.length > 0) {
+        await this.prisma.fileCache.deleteMany({ where: { id: { in: staleIds } } });
+        removedCount += staleIds.length;
+      }
+
+      deleteCursor = cached[cached.length - 1].id;
+      if (cached.length < DELETE_BATCH_SIZE) break;
+    }
+
     const nextChangesPageToken = await this.driveService.getStartPageToken(accessToken);
-    this.logger.log(`Full Drive sync completed for account ${accountId}: ${seenFileIds.size} files`);
+    this.logger.log(`Full Drive sync completed for account ${accountId}: ${seenFileIds.size} files, ${removedCount} stale entries removed`);
     return {
       mode: 'full',
       fileCount: seenFileIds.size,
-      removedCount: 0,
+      removedCount,
       nextChangesPageToken,
     };
   }
@@ -877,6 +901,7 @@ export class FilesService {
             const account = accountById.get(file.accountId);
             if (!account) return;
             if (account.userId !== userId) return;
+            if (account.status === 'REAUTH_REQUIRED') return;
             const refreshed = await this.refreshThumbnailMetadataIfNeeded(account, file);
             file.thumbnailLink = refreshed.thumbnailLink;
             file.thumbnailUpdatedAt = refreshed.thumbnailUpdatedAt;

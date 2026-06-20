@@ -76,28 +76,44 @@ export class DuplicatesService {
 
   async runDuplicateScanForUser(userId: string) {
     const existingCount = await this.prisma.duplicateGroup.count({ where: { userId } });
-    const files = await this.prisma.fileCache.findMany({
-      where: {
-        account: { userId },
-        isFolder: false,
-        sizeBytes: { gt: 0 },
-      },
-      select: {
-        id: true,
-        name: true,
-        sizeBytes: true,
-      },
-    });
 
+    // Use cursor-based pagination to avoid loading all files into memory at once
+    const BATCH_SIZE = 5000;
     const grouped = new Map<string, FileDuplicateCandidate[]>();
-    for (const file of files) {
-      const key = `${file.name}\u0000${file.sizeBytes.toString()}`;
-      const existing = grouped.get(key);
-      if (existing) {
-        existing.push(file);
-      } else {
-        grouped.set(key, [file]);
+    let cursor: string | undefined;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const batch = await this.prisma.fileCache.findMany({
+        where: {
+          account: { userId },
+          isFolder: false,
+          sizeBytes: { gt: 0 },
+        },
+        select: {
+          id: true,
+          name: true,
+          sizeBytes: true,
+        },
+        orderBy: { id: 'asc' },
+        take: BATCH_SIZE,
+        ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      });
+
+      if (batch.length === 0) break;
+
+      for (const file of batch) {
+        const key = `${file.name}\u0000${file.sizeBytes.toString()}`;
+        const existing = grouped.get(key);
+        if (existing) {
+          existing.push(file);
+        } else {
+          grouped.set(key, [file]);
+        }
       }
+
+      cursor = batch[batch.length - 1].id;
+      if (batch.length < BATCH_SIZE) break;
     }
 
     const duplicates = [...grouped.values()]

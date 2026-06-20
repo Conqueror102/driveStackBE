@@ -1,0 +1,5 @@
+$kind: http-request
+description: Returns webViewLink, webContentLink, and exportLinks where Google Drive provides them.
+url: "{{base_url}}/files/{{account_id}}/{{drive_file_id}}/links"
+method: GET
+order: 6000

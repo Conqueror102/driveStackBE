@@ -1,0 +1,17 @@
+$kind: collection
+description: Postman collection for the Gmail Aggregator NestJS backend.
+scripts:
+  - type: http:afterResponse
+    code: |-
+      pm.test('Response is JSON when body exists', function () {
+        if (pm.response.text()) {
+          pm.response.to.be.withBody;
+        }
+      });
+    language: text/javascript
+auth:
+  - id: f8e7216f-92dd-44af-b98f-41df3a002f36
+    type: bearer
+    name: bearer auth
+    credentials:
+      token: "{{jwt_token}}"
