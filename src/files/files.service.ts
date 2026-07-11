@@ -71,7 +71,11 @@ export class FilesService {
 
     const where: Prisma.FileCacheWhereInput = {
       account: { userId },
-      ...(query.accountId ? { accountId: query.accountId } : {}),
+      ...(query.accountId
+        ? { accountId: query.accountId }
+        : query.accountIds && query.accountIds.length
+          ? { accountId: { in: query.accountIds } }
+          : {}),
       ...(query.fileType ? { fileType: query.fileType } : {}),
       ...(query.search ? { name: { contains: query.search, mode: 'insensitive' } } : {}),
       ...(query.parentId ? { driveParentId: query.parentId } : {}),
@@ -845,6 +849,7 @@ export class FilesService {
         mimeType: file.mimeType,
         fileType: inferFileType(file.mimeType),
         sizeBytes: BigInt(file.size || '0'),
+        md5Checksum: file.md5Checksum || null,
         webViewLink: file.webViewLink,
         thumbnailLink: file.thumbnailLink,
         thumbnailUpdatedAt: now,
@@ -862,6 +867,7 @@ export class FilesService {
         mimeType: file.mimeType,
         fileType: inferFileType(file.mimeType),
         sizeBytes: BigInt(file.size || '0'),
+        md5Checksum: file.md5Checksum || null,
         webViewLink: file.webViewLink,
         thumbnailLink: file.thumbnailLink,
         thumbnailUpdatedAt: now,

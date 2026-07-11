@@ -591,6 +591,7 @@ export class MoveService {
       mimeType: file.mimeType,
       fileType: inferFileType(file.mimeType),
       sizeBytes: BigInt(file.size || '0'),
+      md5Checksum: file.md5Checksum || null,
       webViewLink: file.webViewLink || null,
       thumbnailLink: file.thumbnailLink || null,
       thumbnailUpdatedAt: now,

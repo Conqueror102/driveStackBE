@@ -14,7 +14,6 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { GeoModule } from './common/geo/geo.module';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
 import { RequestLoggingInterceptor } from './common/interceptors/request-logging.interceptor';
-import { TokenRefreshInterceptor } from './common/interceptors/token-refresh.interceptor';
 import { DriveModule } from './drive/drive.module';
 import { DuplicatesModule } from './duplicates/duplicates.module';
 import { EmailModule } from './email/email.module';
@@ -65,7 +64,6 @@ import { SubscriptionsModule } from './subscriptions/subscriptions.module';
   providers: [
     { provide: APP_GUARD, useClass: RateLimitGuard },
     { provide: APP_INTERCEPTOR, useClass: RequestLoggingInterceptor },
-    { provide: APP_INTERCEPTOR, useClass: TokenRefreshInterceptor },
     { provide: APP_FILTER, useClass: HttpExceptionFilter },
   ],
 })

@@ -4,6 +4,7 @@ import { ActivityEventType, NotificationType } from '@prisma/client';
 import { ActivityService } from '../activity/activity.service';
 import { AdminAuditService } from '../common/admin-audit/admin-audit.service';
 import { DuplicatesService } from '../duplicates/duplicates.service';
+import { GoogleAccountsService } from '../google-accounts/google-accounts.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueueService } from '../queue/queue.service';
@@ -19,7 +20,48 @@ export class CleanupService {
     private readonly duplicates: DuplicatesService,
     private readonly referrals: ReferralsService,
     private readonly adminAudit: AdminAuditService,
+    private readonly googleAccounts: GoogleAccountsService,
   ) {}
+
+  // Proactively refresh Google tokens before they expire, off the request path.
+  @Cron('*/30 * * * *')
+  async refreshExpiringGoogleTokens() {
+    await this.googleAccounts.refreshExpiringAccounts();
+  }
+
+  // Weekly "you can reclaim X" digest — a recurring hook back into the app.
+  @Cron('0 8 * * 1')
+  async sendWeeklyCleanupDigest() {
+    const MIN_RECOVERABLE = 100n * 1024n * 1024n; // only nudge when it's worth it (>=100 MB)
+    const groups = await this.prisma.duplicateGroup.findMany({
+      select: { userId: true, sizeBytes: true, fileIds: true },
+    });
+    const recoverableByUser = new Map<string, bigint>();
+    for (const group of groups) {
+      const removableCopies = BigInt(Math.max(group.fileIds.length - 1, 0));
+      const prev = recoverableByUser.get(group.userId) ?? 0n;
+      recoverableByUser.set(group.userId, prev + group.sizeBytes * removableCopies);
+    }
+    for (const [userId, bytes] of recoverableByUser) {
+      if (bytes < MIN_RECOVERABLE) continue;
+      await this.notifications.create(
+        userId,
+        NotificationType.DUPLICATE_FOUND,
+        `You can reclaim ${this.formatBytes(bytes)} by cleaning up duplicate files.`,
+      );
+    }
+  }
+
+  private formatBytes(bytes: bigint): string {
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = Number(bytes);
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+  }
 
   @Cron('0 * * * *')
   async expireUploadSessions() {

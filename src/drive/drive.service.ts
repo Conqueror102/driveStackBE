@@ -14,6 +14,7 @@ export type DriveFile = {
   name: string;
   mimeType: string;
   size?: string;
+  md5Checksum?: string;
   webViewLink?: string;
   webContentLink?: string;
   thumbnailLink?: string;
@@ -50,7 +51,7 @@ export class DriveService {
         pageSize: Math.min(options.pageSize || 100, 1000),
         q: options.query || 'trashed=false',
         fields:
-          'nextPageToken, files(id,name,mimeType,size,webViewLink,webContentLink,thumbnailLink,iconLink,exportLinks,parents,createdTime,modifiedTime)',
+          'nextPageToken, files(id,name,mimeType,size,md5Checksum,webViewLink,webContentLink,thumbnailLink,iconLink,exportLinks,parents,createdTime,modifiedTime)',
         supportsAllDrives: true,
         includeItemsFromAllDrives: true,
       });
@@ -109,7 +110,7 @@ export class DriveService {
         pageSize: Math.min(options.pageSize || 1000, 1000),
         spaces: 'drive',
         fields:
-          'nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,size,webViewLink,webContentLink,thumbnailLink,iconLink,exportLinks,parents,createdTime,modifiedTime))',
+          'nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,size,md5Checksum,webViewLink,webContentLink,thumbnailLink,iconLink,exportLinks,parents,createdTime,modifiedTime))',
         supportsAllDrives: true,
         includeItemsFromAllDrives: true,
       });
@@ -338,6 +339,7 @@ export class DriveService {
       name: file.name || '',
       mimeType: file.mimeType || 'application/octet-stream',
       size: file.size || undefined,
+      md5Checksum: file.md5Checksum || undefined,
       webViewLink: file.webViewLink || undefined,
       webContentLink: file.webContentLink || undefined,
       thumbnailLink: file.thumbnailLink || undefined,

@@ -1,9 +1,11 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { AuditAction, ConnectedAccount } from '@prisma/client';
 import { createHash, randomBytes } from 'crypto';
+import { NotificationType } from '@prisma/client';
 import { AuditService } from '../common/audit/audit.service';
 import { CryptoService } from '../common/crypto/crypto.service';
 import { DriveService } from '../drive/drive.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { FeatureGuardService } from '../subscriptions/feature-guard.service';
 import { GoogleAuthService } from './google-auth.service';
@@ -36,6 +38,7 @@ export class GoogleAccountsService {
     private readonly driveService: DriveService,
     private readonly audit: AuditService,
     private readonly featureGuard: FeatureGuardService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async createConnectUrl(userId: string): Promise<string> {
@@ -50,7 +53,26 @@ export class GoogleAccountsService {
     return this.googleAuth.getAuthUrl(state);
   }
 
-  async consumeOAuthState(state: string): Promise<string> {
+  async createReconnectUrl(userId: string, accountId: string): Promise<string> {
+    const account = await this.prisma.connectedAccount.findUnique({ where: { id: accountId } });
+    if (!account || account.userId !== userId) {
+      throw new ForbiddenException('Account does not belong to user');
+    }
+    const state = randomBytes(32).toString('base64url');
+    await this.prisma.oAuthState.create({
+      data: {
+        userId,
+        stateHash: this.hashState(state),
+        reconnectAccountId: account.id,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      },
+    });
+    // Pre-fill the Google account chooser with the exact email that needs reconnection
+    // so the user can heal the right account instead of picking the wrong one.
+    return this.googleAuth.getAuthUrl(state, account.googleEmail);
+  }
+
+  async consumeOAuthState(state: string): Promise<{ userId: string; reconnectAccountId: string | null }> {
     const stateHash = this.hashState(state);
     const oauthState = await this.prisma.oAuthState.findUnique({ where: { stateHash } });
     if (!oauthState || oauthState.usedAt || oauthState.expiresAt.getTime() < Date.now()) {
@@ -60,13 +82,18 @@ export class GoogleAccountsService {
       where: { id: oauthState.id },
       data: { usedAt: new Date() },
     });
-    return oauthState.userId;
+    return { userId: oauthState.userId, reconnectAccountId: oauthState.reconnectAccountId };
   }
 
-  async connectAccount(userId: string, code: string): Promise<ConnectedAccount> {
+  async connectAccount(
+    userId: string,
+    code: string,
+    reconnectAccountId?: string | null,
+  ): Promise<ConnectedAccount> {
     const limit = await this.featureGuard.getAccountLimit(userId);
     const current = await this.prisma.connectedAccount.count({ where: { userId } });
-    if (current >= limit) {
+    // A reconnect heals an existing account, so it never counts against the limit.
+    if (!reconnectAccountId && current >= limit) {
       throw new ForbiddenException({
         code: 'FEATURE_LOCKED',
         feature: 'connect_account_above_limit',
@@ -81,6 +108,21 @@ export class GoogleAccountsService {
     }
 
     const userInfo = await this.googleAuth.getUserInfo(credentials.access_token);
+
+    // Reconnect flow: the returned Google account MUST match the one being healed,
+    // otherwise the user picked the wrong account in the chooser.
+    if (reconnectAccountId) {
+      const target = await this.prisma.connectedAccount.findUnique({ where: { id: reconnectAccountId } });
+      if (!target || target.userId !== userId) {
+        throw new ForbiddenException('Account does not belong to user');
+      }
+      if (userInfo.email !== target.googleEmail) {
+        throw new BadRequestException(
+          `Wrong Google account selected. Please choose ${target.googleEmail} to reconnect.`,
+        );
+      }
+    }
+
     const existing = await this.prisma.connectedAccount.findUnique({
       where: { googleEmail: userInfo.email },
     });
@@ -244,6 +286,22 @@ export class GoogleAccountsService {
     });
   }
 
+  /**
+   * Proactively refresh access tokens for accounts whose tokens expire soon.
+   * Runs from a scheduled job (not the request path) so normal API traffic
+   * isn't slowed by N Google refresh calls. On failure, the account is marked
+   * REAUTH_REQUIRED by refreshAccountTokens.
+   */
+  async refreshExpiringAccounts(withinMs = 60 * 60 * 1000): Promise<void> {
+    const threshold = new Date(Date.now() + withinMs);
+    const accounts = await this.prisma.connectedAccount.findMany({
+      where: { status: 'ACTIVE', expiresAt: { lt: threshold } },
+    });
+    for (const account of accounts) {
+      await this.refreshAccountTokens(account);
+    }
+  }
+
   private async getQuotaWithRefresh(account: ConnectedAccount) {
     // If account already needs re-auth, don't bother trying — surface immediately
     if (account.status === 'REAUTH_REQUIRED') {
@@ -342,6 +400,15 @@ export class GoogleAccountsService {
       accountId: account.id,
       action: AuditAction.GOOGLE_ACCOUNT_REAUTH_REQUIRED,
     });
+    // Only notify on the ACTIVE -> REAUTH_REQUIRED transition so a persistently
+    // broken account doesn't spam the user on every refresh attempt.
+    if (account.status !== 'REAUTH_REQUIRED') {
+      await this.notifications.create(
+        account.userId,
+        NotificationType.REAUTH_REQUIRED,
+        `${account.googleEmail} needs to be reconnected to keep syncing.`,
+      );
+    }
   }
 
   private isTokenError(error: unknown): boolean {

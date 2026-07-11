@@ -1,4 +1,4 @@
-import { Controller, Delete, Get, Logger, Param, Patch, Query, Redirect, Res, UseGuards } from '@nestjs/common';
+import { BadRequestException, Controller, Delete, Get, Logger, Param, Patch, Query, Redirect, Res, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Response } from 'express';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -30,6 +30,13 @@ export class GoogleAccountsController {
     return { url: await this.accountsService.createConnectUrl(user.id) };
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Get(':id/reconnect')
+  @Redirect()
+  async reconnect(@CurrentUser() user: SafeUser, @Param('id') accountId: string) {
+    return { url: await this.accountsService.createReconnectUrl(user.id, accountId) };
+  }
+
   @Get('callback')
   async callback(
     @Query('code') code: string,
@@ -38,12 +45,16 @@ export class GoogleAccountsController {
   ) {
     const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3001';
     try {
-      const userId = await this.accountsService.consumeOAuthState(state);
-      await this.accountsService.connectAccount(userId, code);
-      return res.redirect(`${frontendUrl}/accounts?connected=true`);
+      const { userId, reconnectAccountId } = await this.accountsService.consumeOAuthState(state);
+      await this.accountsService.connectAccount(userId, code, reconnectAccountId);
+      const flag = reconnectAccountId ? 'reconnected=true' : 'connected=true';
+      return res.redirect(`${frontendUrl}/accounts?${flag}`);
     } catch (error) {
       this.logger.warn(`Google OAuth callback failed: ${error instanceof Error ? error.message : String(error)}`);
-      return res.redirect(`${frontendUrl}/accounts?error=oauth_failed`);
+      // Surface the wrong-account case distinctly so the UI can prompt a corrective retry.
+      const isWrongAccount = error instanceof BadRequestException;
+      const errorCode = isWrongAccount ? 'wrong_account' : 'oauth_failed';
+      return res.redirect(`${frontendUrl}/accounts?error=${errorCode}`);
     }
   }
 

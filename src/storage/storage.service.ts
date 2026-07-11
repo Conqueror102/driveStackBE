@@ -111,6 +111,36 @@ export class StorageService {
     };
   }
 
+  /**
+   * Analytics: aggregate cached-file bytes and counts by file type across all
+   * of a user's accounts. Powers the "what's eating my storage" insight view.
+   */
+  async getUsageByType(userId: string) {
+    const accounts = await this.prisma.connectedAccount.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+    const accountIds = accounts.map((account) => account.id);
+    if (!accountIds.length) {
+      return { totalBytes: 0n, byType: [] as Array<{ fileType: string; bytes: bigint; count: number }> };
+    }
+    const grouped = await this.prisma.fileCache.groupBy({
+      by: ['fileType'],
+      where: { accountId: { in: accountIds }, isFolder: false },
+      _sum: { sizeBytes: true },
+      _count: { _all: true },
+    });
+    const byType = grouped
+      .map((group) => ({
+        fileType: group.fileType,
+        bytes: group._sum.sizeBytes ?? 0n,
+        count: group._count._all,
+      }))
+      .sort((a, b) => Number(b.bytes - a.bytes));
+    const totalBytes = byType.reduce((sum, item) => sum + item.bytes, 0n);
+    return { totalBytes, byType };
+  }
+
   private getRecommendedAccountId(
     accounts: Array<{
       accountId: string;

@@ -1,11 +1,26 @@
 import { FileType } from '@prisma/client';
 import { Transform } from 'class-transformer';
-import { IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
+import { IsArray, IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 
 export class ListFilesQueryDto {
   @IsOptional()
   @IsString()
   accountId?: string;
+
+  // Unified cross-account browsing: filter to a subset of the user's accounts.
+  // Accepts `?accountIds=a,b` or repeated `?accountIds=a&accountIds=b`.
+  @IsOptional()
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value
+      : String(value)
+          .split(',')
+          .map((v) => v.trim())
+          .filter(Boolean),
+  )
+  @IsArray()
+  @IsString({ each: true })
+  accountIds?: string[];
 
   @IsOptional()
   @IsEnum(FileType)

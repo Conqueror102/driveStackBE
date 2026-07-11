@@ -221,6 +221,7 @@ model FileCache {
   mimeType           String
   fileType           FileType         @default(OTHER)
   sizeBytes          BigInt           @default(0)
+  md5Checksum        String?
   webViewLink        String?
   thumbnailLink      String?
   driveParentId      String?
@@ -236,6 +237,7 @@ model FileCache {
   @@index([accountId])
   @@index([accountId, fileType])
   @@index([accountId, driveModifiedAt(sort: Desc)])
+  @@index([accountId, md5Checksum])
   @@index([name])
 }
 
@@ -383,13 +385,14 @@ model StorageSnapshot {
 }
 
 model OAuthState {
-  id        String    @id @default(cuid())
-  userId    String
-  stateHash String    @unique
-  expiresAt DateTime
-  usedAt    DateTime?
-  createdAt DateTime  @default(now())
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                 String    @id @default(cuid())
+  userId             String
+  stateHash          String    @unique
+  reconnectAccountId String?
+  expiresAt          DateTime
+  usedAt             DateTime?
+  createdAt          DateTime  @default(now())
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([expiresAt])
@@ -491,6 +494,7 @@ enum ActivityEventType {
   FILE_RESTORED
   DUPLICATE_SCAN_COMPLETED
   STORAGE_ALERT
+  ACCOUNT_REAUTH_REQUIRED
 }
 
 enum NotificationType {
@@ -498,6 +502,7 @@ enum NotificationType {
   MOVE_COMPLETE
   MOVE_FAILED
   DUPLICATE_FOUND
+  REAUTH_REQUIRED
 }
 
 enum FileType {

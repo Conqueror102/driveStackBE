@@ -12,12 +12,13 @@ export type GoogleCredentials = {
 export class GoogleAuthService {
   constructor(private readonly configService: ConfigService) {}
 
-  getAuthUrl(state: string): string {
+  getAuthUrl(state: string, loginHint?: string): string {
     const client = this.createOAuthClient();
     return client.generateAuthUrl({
       access_type: 'offline',
       prompt: 'consent',
       state,
+      ...(loginHint ? { login_hint: loginHint } : {}),
       scope: [
         'https://www.googleapis.com/auth/drive',
         'https://www.googleapis.com/auth/userinfo.email',

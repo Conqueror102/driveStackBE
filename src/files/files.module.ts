@@ -12,5 +12,6 @@ import { FilesService } from './files.service';
   imports: [ConfigModule, DriveModule, ActivityModule, GoogleAccountsModule, SubscriptionsModule],
   controllers: [FilesController],
   providers: [FilesService, FilesQueueProcessor],
+  exports: [FilesService],
 })
 export class FilesModule {}

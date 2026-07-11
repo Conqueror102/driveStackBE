@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { ActivityEventType, NotificationType } from '@prisma/client';
 import { ActivityService } from '../activity/activity.service';
+import { FilesService } from '../files/files.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueueService } from '../queue/queue.service';
@@ -10,7 +11,10 @@ type FileDuplicateCandidate = {
   id: string;
   name: string;
   sizeBytes: bigint;
+  md5Checksum: string | null;
 };
+
+export type ResolveStrategy = 'keep_newest' | 'keep_oldest';
 
 @Injectable()
 export class DuplicatesService {
@@ -20,6 +24,7 @@ export class DuplicatesService {
     private readonly activity: ActivityService,
     private readonly notifications: NotificationsService,
     private readonly featureGuard: FeatureGuardService,
+    private readonly files: FilesService,
   ) {}
 
   async list(userId: string) {
@@ -47,12 +52,24 @@ export class DuplicatesService {
       : [];
     const filesById = new Map(files.map((file) => [file.id, file]));
 
-    return {
-      summary: this.summarizeGroups(groups),
-      groups: groups.map((group) => ({
+    // Hydrate against live FileCache rows and drop copies that no longer exist
+    // (e.g. trashed outside a resolve) so the summary can't overstate savings.
+    const hydrated = groups
+      .map((group) => ({
         ...group,
         files: group.fileIds.map((fileId) => filesById.get(fileId)).filter(Boolean),
-      })),
+      }))
+      .filter((group) => group.files.length > 1);
+
+    return {
+      summary: this.summarizeGroups(
+        hydrated.map((group) => ({
+          fileIds: group.files.map((file) => file!.id),
+          sizeBytes: group.sizeBytes,
+          createdAt: group.createdAt,
+        })),
+      ),
+      groups: hydrated,
     };
   }
 
@@ -72,6 +89,89 @@ export class DuplicatesService {
       return { queued: false, summary };
     }
     return { queued: true };
+  }
+
+  /**
+   * Resolve a single duplicate group by keeping one file and trashing the rest.
+   * Reuses FilesService.bulkDelete so Drive trashing, cache cleanup and quota
+   * refresh all go through the existing, tested path.
+   */
+  async resolveGroup(userId: string, groupId: string, keepFileId: string) {
+    await this.featureGuard.requireFeature(userId, 'duplicate_detector');
+    const group = await this.prisma.duplicateGroup.findUnique({ where: { id: groupId } });
+    if (!group || group.userId !== userId) {
+      throw new NotFoundException('Duplicate group not found');
+    }
+    if (!group.fileIds.includes(keepFileId)) {
+      throw new BadRequestException('keepFileId must be one of the files in the group');
+    }
+    const result = await this.trashDuplicates(userId, group, [keepFileId]);
+    // The group is resolved — drop it so summaries reflect reality immediately
+    // (a rescan is also queued by bulkDelete and will rebuild if anything remains).
+    if (result.failed === 0) {
+      await this.prisma.duplicateGroup.delete({ where: { id: group.id } }).catch(() => undefined);
+    }
+    return result;
+  }
+
+  /**
+   * Resolve every duplicate group for a user using a keep strategy.
+   */
+  async resolveAll(userId: string, strategy: ResolveStrategy = 'keep_newest') {
+    await this.featureGuard.requireFeature(userId, 'duplicate_detector');
+    const groups = await this.prisma.duplicateGroup.findMany({ where: { userId } });
+    let trashed = 0;
+    let failed = 0;
+    let reclaimedBytes = 0n;
+    for (const group of groups) {
+      const keepId = await this.pickKeeper(userId, group, strategy);
+      if (!keepId) continue;
+      const r = await this.trashDuplicates(userId, group, [keepId]);
+      trashed += r.trashed;
+      failed += r.failed;
+      reclaimedBytes += r.reclaimedBytes;
+      if (r.failed === 0) {
+        await this.prisma.duplicateGroup.delete({ where: { id: group.id } }).catch(() => undefined);
+      }
+    }
+    return { groupsResolved: groups.length, trashed, failed, reclaimedBytes };
+  }
+
+  private async trashDuplicates(
+    userId: string,
+    group: { fileIds: string[]; sizeBytes: bigint },
+    keepIds: string[],
+  ) {
+    const files = await this.prisma.fileCache.findMany({
+      where: { id: { in: group.fileIds }, account: { userId } },
+      select: { id: true, driveFileId: true, accountId: true },
+    });
+    const toTrash = files.filter((file) => !keepIds.includes(file.id));
+    if (toTrash.length === 0) {
+      return { trashed: 0, failed: 0, reclaimedBytes: 0n };
+    }
+    const result = await this.files.bulkDelete(userId, {
+      files: toTrash.map((file) => ({ accountId: file.accountId, driveFileId: file.driveFileId })),
+    });
+    // All copies in a group share the same size, so reclaimed = size * copies removed.
+    const reclaimedBytes = group.sizeBytes * BigInt(result.success);
+    return { trashed: result.success, failed: result.failed, reclaimedBytes };
+  }
+
+  private async pickKeeper(
+    userId: string,
+    group: { fileIds: string[] },
+    strategy: ResolveStrategy,
+  ): Promise<string | null> {
+    const files = await this.prisma.fileCache.findMany({
+      where: { id: { in: group.fileIds }, account: { userId } },
+      select: { id: true, driveModifiedAt: true },
+    });
+    if (files.length <= 1) return null;
+    const sorted = [...files].sort(
+      (a, b) => a.driveModifiedAt.getTime() - b.driveModifiedAt.getTime(),
+    );
+    return strategy === 'keep_oldest' ? sorted[0].id : sorted[sorted.length - 1].id;
   }
 
   async runDuplicateScanForUser(userId: string) {
@@ -94,6 +194,7 @@ export class DuplicatesService {
           id: true,
           name: true,
           sizeBytes: true,
+          md5Checksum: true,
         },
         orderBy: { id: 'asc' },
         take: BATCH_SIZE,
@@ -103,7 +204,9 @@ export class DuplicatesService {
       if (batch.length === 0) break;
 
       for (const file of batch) {
-        const key = `${file.name}\u0000${file.sizeBytes.toString()}`;
+        const key = file.md5Checksum
+          ? `md5:${file.md5Checksum}`
+          : `ns:${file.name}\u0000${file.sizeBytes.toString()}`;
         const existing = grouped.get(key);
         if (existing) {
           existing.push(file);
